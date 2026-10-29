@@ -109,7 +109,10 @@ namespace CookApps.LocaleCapture
         }
 
         // 기록을 멈춘다(창의 STOP). 재생 중이면 취소.
-        public void Stop() => Finish(null, IsRecording);
+        public void Stop() => Finish(null, Keep);
+
+        // 끝낼 때 기록을 남길지. START(바로 녹화면 Play 순간) 전에 끝나면 영상으로 쓸 구간이 없어 버린다.
+        private bool Keep => IsRecording && VideoStartMarked;
 
         public bool VideoStartMarked { get; private set; }
         public int VideoStartFrame => _manifest?.VideoStartFrame ?? 0;
@@ -578,7 +581,7 @@ namespace CookApps.LocaleCapture
             RestoreBackgroundInput();
 
             if (error != null) { Status = "실패: " + error; Debug.LogError("[LocaleCapture] " + error); }
-            else Status = IsRecording ? "기록 완료" : (completed ? Status + " 완료" : "취소");
+            else Status = IsRecording ? (completed ? "기록 완료" : "취소") : (completed ? Status + " 완료" : "취소");
             LastStatus = Status;
             if (this != null) Destroy(gameObject);
             CaptureBoot.RaiseEnded(new SessionResult { Request = Request, Completed = completed && error == null, Error = error });
@@ -588,13 +591,13 @@ namespace CookApps.LocaleCapture
         // 기록 중에 플레이 모드를 끄면 거기까지를 기록으로 저장한다. 재생 중이면 취소.
         private void OnPlayModeChanged(UnityEditor.PlayModeStateChange state)
         {
-            if (state == UnityEditor.PlayModeStateChange.ExitingPlayMode) Finish(null, IsRecording);
+            if (state == UnityEditor.PlayModeStateChange.ExitingPlayMode) Finish(null, Keep);
         }
 #endif
 
         private void OnDestroy()
         {
-            if (!_finished) Finish(null, IsRecording);
+            if (!_finished) Finish(null, Keep);
         }
 
         private static int ChannelCount(AudioSpeakerMode mode)

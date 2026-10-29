@@ -268,16 +268,17 @@ namespace CookApps.LocaleCapture.Editor
                     GUI.backgroundColor = new Color(1f, 0.45f, 0.4f);
                     using (new EditorGUI.DisabledScope(session == null))
                     {
-                        if (!marked && GUILayout.Button("▶  START", BigButton, GUILayout.Width(95), GUILayout.Height(30))) CaptureDirector.MarkStart();
-                        if (GUILayout.Button("■  STOP", BigButton, GUILayout.Width(marked ? 190 : 95), GUILayout.Height(30))) CaptureDirector.StopRecording();
+                        if (!marked && GUILayout.Button("▶  START", BigButton, GUILayout.Width(190), GUILayout.Height(30))) CaptureDirector.MarkStart();
+                        if (marked && GUILayout.Button("■  STOP", BigButton, GUILayout.Width(190), GUILayout.Height(30))) CaptureDirector.StopRecording();
                     }
                     GUI.backgroundColor = Color.white;
                     GUILayout.Space(8);
                     string time = session == null ? "게임 시작 중"
                         : marked ? $"녹화 중  {(session.Frame - session.VideoStartFrame) / (float) _settings.FrameRate:F1}s"
-                        : "START 를 누르면 그때부터 녹화";
+                        : "START 전 — 아직 녹화 안 됨";
                     GUILayout.Label(time, EditorStyles.boldLabel, GUILayout.Height(30));
                     GUILayout.FlexibleSpace();
+                    if (!marked && GUILayout.Button("Cancel", GUILayout.Width(70), GUILayout.Height(30))) CaptureDirector.Cancel();
                 }
                 else
                 {

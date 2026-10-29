@@ -281,7 +281,7 @@ namespace CookApps.LocaleCapture.Editor
             switch (_state.Phase)
             {
                 case Recording:
-                    if (!_state.LastCompleted || ReplayManifest.Load(_state.Directory) == null) { Finish(_state.LastError ?? "기록이 저장되지 않았다", false); break; }
+                    if (!_state.LastCompleted || ReplayManifest.Load(_state.Directory) == null) { Finish(_state.LastError ?? "START 전에 끝나 녹화하지 않았다", false); break; }
                     LocalState.Save(AfterStateDir);   // 기록 직후 상태 — 다 끝나면 여기로 되돌린다
                     _state.AfterState = AfterStateDir;
                     BeginRendering();
