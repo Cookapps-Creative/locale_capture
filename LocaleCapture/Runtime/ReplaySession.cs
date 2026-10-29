@@ -60,6 +60,7 @@ namespace CookApps.LocaleCapture
         // 재생에서 이 프레임 전까지는 30fps 로 묶지 않고 빨리 돈다(부팅 — 첫 입력·START 전, 영상에 안 남는 구간).
         // 로딩은 동기 지점이 붙잡고, 서버 응답·시계·Task.Delay 는 프레임 기준이라 빨리 돌아도 같은 프레임에 끝난다.
         private int _fastUntil;
+        private int _nextToggle;   // 재생에서 다음에 적용할 인스펙터 켜기/끄기
 
         private void Pace()
         {
@@ -116,6 +117,13 @@ namespace CookApps.LocaleCapture
 
         public bool VideoStartMarked { get; private set; }
         public int VideoStartFrame => _manifest?.VideoStartFrame ?? 0;
+
+        internal void RecordToggle(InspectorToggles.Toggle t)
+        {
+            if (_manifest == null) return;
+            t.Frame = Frame;
+            _manifest.Toggles.Add(t);
+        }
 
         public void MarkVideoStart()
         {
@@ -347,6 +355,8 @@ namespace CookApps.LocaleCapture
                 UiTrace.Check(Frame, _replayUi);
                 CaptureVerify.FrameTime(FrameMs());
                 Advance();
+                while (_nextToggle < _manifest.Toggles.Count && _manifest.Toggles[_nextToggle].Frame <= Frame)
+                    InspectorToggles.Apply(_manifest.Toggles[_nextToggle++]);
                 if (Frame < TotalFrames) _player.QueueFrame(Frame);
                 Time.captureDeltaTime = 1f / _manifest.Fps;
                 Flush(false);

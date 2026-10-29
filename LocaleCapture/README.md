@@ -14,7 +14,7 @@
 
 1. `Tools > Locale Capture` → 언어 체크, 해상도·품질, Output File 의 File Name·Path → **녹화 대기**.
 2. Unity **Play** 를 직접 누른다. 대기를 누르면 플레이 화면이 Device Simulator 로 바뀌고, 언어별 재생은 자동으로 Game 뷰에서(기록 때 화면 크기·안전 영역 그대로), 끝나면 다시 Simulator 로 돌아온다. Resolution 이 Custom 이면 그 크기 그대로의 Simulator 기기(`LocaleCapture 1080x1920` 등, 노치 없음)를 `Devices/` 에 만들어 자동으로 고른다 — 영상이 출력 크기로 바로 나와 블러·늘림이 없다. Custom 이 아니면 Simulator 에서 고른 기기 그대로이고, 기기 비율이 출력 비율과 다르면 편집 Export 의 비율·Blur 로 맞춘다. 빌드 설정의 첫 씬(켜진 씬이 없으면 목록 첫 씬)부터 열리고, 부팅부터 기록된다.
-3. 원하는 장면에서 **START** → 플레이 → **STOP**. START 부터 STOP 까지만 녹화된다. START 전에는 STOP 이 없고, START 전에 Play 를 끄면 취소된다. Input 의 **바로 녹화** 를 켜 두면 START 없이 Play 부터 녹화가 시작되고 STOP 만 누른다.
+3. 원하는 장면에서 **START** → 플레이 → **STOP**. START 부터 STOP 까지만 녹화된다. START 전에는 STOP 이 없고, START 전에 Play 를 끄면 취소된다. 녹화 중 인스펙터에서 오브젝트·컴포넌트 체크박스(켜기/끄기)를 바꾸면 그 순간이 기록돼 언어별 영상에도 같은 프레임에 반영된다(UI 숨기기 등). Input 의 **바로 녹화** 를 켜 두면 START 없이 Play 부터 녹화가 시작되고 STOP 만 누른다.
 4. 언어마다 플레이 모드가 자동으로 다시 열리며 부팅부터 같은 플레이를 재생하고, START 이후만 녹화한다. BGM·SFX 스템은 앞 언어 패스들이 함께 뽑아(첫 언어 = SFX, 둘째 = BGM) 따로 패스를 돌지 않고, 끝나면 그 영상들의 소리를 다시 섞어 원래대로 둔다. 편집은 창 맨 아래 **Edit Videos** 로 연다.
    첫 입력 전 부팅 구간은 30fps 로 묶지 않고 빨리 돌린다. 패스는 언어 수만큼이고, 하나에 걸리는 시간은 대략 "녹화한 플레이 길이 + 몇 초" 다.
    런타임 패치 대상은 `Library/LocaleCapture/patch-targets.json` 에 캐시해, 코드가 다시 빌드되기 전까지 녹화 대기가 바로 끝난다.

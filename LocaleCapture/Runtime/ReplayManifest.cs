@@ -41,6 +41,8 @@ namespace CookApps.LocaleCapture
         // UI 화면(최상위 Canvas)이 열리고 닫힌 프레임. 재생과 비교해 팝업이 늦게·일찍 뜬 곳을 찾는다.
         public List<UiTrace.Event> UiEvents = new List<UiTrace.Event>();
         public List<int> FrameMs = new List<int>();   // 프레임마다 실제로 걸린 ms(끊김 진단)
+        // 기록 중 인스펙터에서 바꾼 켜기/끄기. 재생 때 같은 프레임에 같은 값으로 둔다.
+        public List<InspectorToggles.Toggle> Toggles = new List<InspectorToggles.Toggle>();
         public string TraceFile = "input.trace";
         public const string StateFolder = "state";   // 기록 시작 때의 로컬 저장(persistentDataPath·PlayerPrefs)
 
