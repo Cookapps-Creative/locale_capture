@@ -272,7 +272,8 @@ namespace CookApps.LocaleCapture.Editor
             _state.LastError = result.Error;
             _state.PendingRequestJson = null;
             Save();
-            EditorApplication.delayCall += () => { if (EditorApplication.isPlaying) EditorApplication.ExitPlaymode(); };
+            // 사용자가 Play 를 꺼서 끝난 경우엔 이 delayCall 이 다음 패스가 Play 를 연 뒤에 돈다 — 그 패스(대기 중 요청)는 끄지 않는다.
+            EditorApplication.delayCall += () => { if (EditorApplication.isPlaying && string.IsNullOrEmpty(_state.PendingRequestJson)) EditorApplication.ExitPlaymode(); };
         }
 
         private static void OnPlayMode(PlayModeStateChange change)
