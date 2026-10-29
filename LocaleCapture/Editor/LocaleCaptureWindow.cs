@@ -18,6 +18,7 @@ namespace CookApps.LocaleCapture.Editor
         private string _manualLocales = "";
         private string _languageKey = "";
         private string _recordingsDir = "Recordings/LocaleCapture";
+        private string _name = "capture";
         private string _lastDirectory = "";
         private CaptureSettings _settings = CaptureSettings.Default;
         private List<string> _health;
@@ -43,6 +44,7 @@ namespace CookApps.LocaleCapture.Editor
         private void OnEnable()
         {
             _recordingsDir = EditorPrefs.GetString(Prefix + "RecordingsDir", _recordingsDir);
+            _name = EditorPrefs.GetString(Prefix + "Name", _name);
             _lastDirectory = EditorPrefs.GetString(Prefix + "LastRecording", "");
             _manualLocales = EditorPrefs.GetString(Prefix + "ManualLocales", "");
             _languageKey = EditorPrefs.GetString(Prefix + "LanguageKey", "");
@@ -110,7 +112,7 @@ namespace CookApps.LocaleCapture.Editor
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
         }
 
-        // Unity Recorder 처럼: 위에 녹화 버튼·상태 막대, 아래에 Description / Input / Output Format 구획(저장 위치·이름은 녹화 대기 때 고른다).
+        // Unity Recorder 처럼: 위에 녹화 버튼·상태 막대, 아래에 Description / Input / Output Format / Output File 구획.
         // 줄은 모두 Row() 한 곳에서 좌표를 정해(라벨 칸 고정, 같은 좌우 여백) EditorGUI 로 그린다 — 자동 배치 필드는 스타일마다 여백이 달라 들쭉날쭉하다.
         private const float LabelWidth = 150, Pad = 10, LabelIndent = 10, BottomBarHeight = 40;
         private float _topBarHeight = 46;
@@ -153,6 +155,23 @@ namespace CookApps.LocaleCapture.Editor
                     _settings.CustomBitrateMbps = Mathf.Clamp(EditorGUI.IntField(Row("Bitrate (Mbps)"), _settings.CustomBitrateMbps), 1, 200);
 
                 if (EditorGUI.EndChangeCheck()) EditorPrefs.SetString(Prefix + "Settings", JsonUtility.ToJson(_settings));
+
+                Section("Output File");
+                _name = EditorGUI.TextField(Row("File Name"), _name);
+                Rect path = Row("Path");
+                const float pick = 28, open = 48, gap = 4;
+                _recordingsDir = EditorGUI.TextField(new Rect(path.x, path.y, path.width - pick - open - gap * 2, path.height), _recordingsDir);
+                if (GUI.Button(new Rect(path.xMax - open - pick - gap, path.y, pick, path.height), "..."))
+                {
+                    string picked = EditorUtility.OpenFolderPanel("Path", ResolveDir(), "");
+                    if (!string.IsNullOrEmpty(picked)) _recordingsDir = picked;
+                }
+                if (GUI.Button(new Rect(path.xMax - open, path.y, open, path.height), "Open"))
+                {
+                    Directory.CreateDirectory(ResolveDir());
+                    EditorUtility.RevealInFinder(ResolveDir());
+                }
+                EditorGUI.LabelField(Row(" "), $"{_name}_<시각>/{_name}_<언어>.{_settings.Extension}", EditorStyles.miniLabel);
             }
 
             GUILayout.Space(10);
@@ -374,19 +393,10 @@ namespace CookApps.LocaleCapture.Editor
             return Path.IsPathRooted(_recordingsDir) ? _recordingsDir : Path.Combine(root, _recordingsDir);
         }
 
-        // 녹화 대기: 저장 위치·이름을 고르면 그 이름의 폴더에 기록하고, 영상은 <이름>_<언어>.mp4 로 남는다.
         private void StartRecording()
         {
-            Directory.CreateDirectory(ResolveDir());
-            string dir = EditorUtility.SaveFilePanel("녹화 저장 위치·이름", ResolveDir(), $"capture_{DateTime.Now:yyyyMMdd_HHmmss}", "");
-            if (string.IsNullOrEmpty(dir)) return;
-            if (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any())
-            {
-                EditorUtility.DisplayDialog("녹화 대기", "이미 내용이 있는 폴더입니다. 다른 이름을 고르세요.\n" + dir, "확인");
-                return;
-            }
-            _recordingsDir = Path.GetDirectoryName(dir);   // 다음에 고를 때 여기서 시작
             SavePrefs();
+            string dir = Path.Combine(ResolveDir(), $"{_name}_{DateTime.Now:yyyyMMdd_HHmmss}");
             _lastDirectory = dir;
             EditorPrefs.SetString(Prefix + "LastRecording", dir);
             CaptureDirector.StartRecording(dir, _settings, SelectedLocales(), _languageKey);
@@ -411,6 +421,7 @@ namespace CookApps.LocaleCapture.Editor
         private void SavePrefs()
         {
             EditorPrefs.SetString(Prefix + "RecordingsDir", _recordingsDir);
+            EditorPrefs.SetString(Prefix + "Name", _name);
             EditorPrefs.SetString(Prefix + "Locales", string.Join(",", _selected));
             EditorPrefs.SetString(Prefix + "LanguageKey", _languageKey);
             EditorPrefs.SetString(Prefix + "Settings", JsonUtility.ToJson(_settings));

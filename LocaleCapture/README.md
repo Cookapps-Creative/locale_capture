@@ -12,7 +12,7 @@
 
 ## 사용
 
-1. `Tools > Locale Capture` → 언어 체크, 해상도·품질 → **녹화 대기** → 저장 위치·이름을 고른다(그 이름의 폴더가 생긴다).
+1. `Tools > Locale Capture` → 언어 체크, 해상도·품질, Output File 의 File Name·Path → **녹화 대기**.
 2. Unity **Play** 를 직접 누른다. 대기를 누르면 플레이 화면이 Device Simulator 로 바뀌고, 언어별 재생은 자동으로 Game 뷰에서(기록 때 화면 크기·안전 영역 그대로), 끝나면 다시 Simulator 로 돌아온다. Resolution 이 Custom 이면 그 크기 그대로의 Simulator 기기(`LocaleCapture 1080x1920` 등, 노치 없음)를 `Devices/` 에 만들어 자동으로 고른다 — 영상이 출력 크기로 바로 나와 블러·늘림이 없다. Custom 이 아니면 Simulator 에서 고른 기기 그대로이고, 기기 비율이 출력 비율과 다르면 편집 Export 의 비율·Blur 로 맞춘다. 빌드 설정의 첫 씬(켜진 씬이 없으면 목록 첫 씬)부터 열리고, 부팅부터 기록된다.
 3. 원하는 장면에서 **START** → 플레이 → **STOP**. START 부터 STOP 까지만 녹화된다(START 를 안 누르면 처음부터). Input 의 **바로 녹화** 를 켜 두면 START 없이 Play 부터 녹화가 시작되고 STOP 만 누른다.
 4. 언어마다 플레이 모드가 자동으로 다시 열리며 부팅부터 같은 플레이를 재생하고, START 이후만 녹화한다. BGM·SFX 스템은 앞 언어 패스들이 함께 뽑아(첫 언어 = SFX, 둘째 = BGM) 따로 패스를 돌지 않고, 끝나면 그 영상들의 소리를 다시 섞어 원래대로 둔다. 편집은 창 맨 아래 **Edit Videos** 로 연다.
@@ -20,7 +20,7 @@
    런타임 패치 대상은 `Library/LocaleCapture/patch-targets.json` 에 캐시해, 코드가 다시 빌드되기 전까지 녹화 대기가 바로 끝난다.
 5. 창 오른쪽 위 **⋮ → Re-render…** 는 이미 있는 기록을 지금 설정으로 다시 뽑는다. 다시 플레이하지 않고, 서버도 필요 없다.
 
-결과: `<고른 위치>/<이름>/<이름>_<언어>.mp4`, 스템 `audio_bgm.wav`·`audio_sfx.wav`, 진단 `verify/*.json`.
+결과: `<Path>/<File Name>_<시각>/<File Name>_<언어>.mp4`, 스템 `audio_bgm.wav`·`audio_sfx.wav`, 진단 `verify/*.json`.
 
 ## 언어마다 같은 플레이가 되는 방법
 
@@ -31,9 +31,9 @@
 | 기록보다 많은 요청 | 재생에서 같은 요청이 기록보다 많이 나가면 실제 서버로 보내지 않고 그 요청의 마지막 기록 응답으로 대신(연결 대기 화면·실제 계정 변경 방지). 기록에 아예 없는 요청만 실제 서버로 |
 | 언어별 서버 데이터 | 요청에 언어 코드가 든 요청은 그 언어로 처음 뽑을 때만 실서버, 이후 언어별 테이프로 재생 |
 | 시간 | 프로젝트 코드의 DateTime·TickCount, 모든 스크립트와 Assets 의 DLL(DOTween 등)의 realtimeSinceStartup·Stopwatch·unscaled 시간·소리 시계(dspTime)·Task.Delay(메인 스레드)를 "기록 시작 시각 + 프레임/fps" 로 바꿔치기. 기록·재생 모두 실제 1/fps 초 간격으로 돈다 |
-| 난수 | 프로젝트 코드의 new Random()·Guid, BCL Random 생성자, UnityEngine.Random 시드 고정 |
+| 난수 | 프로젝트 코드의 new Random()·Guid, BCL Random 생성자, UnityEngine.Random 시드 고정. new Random() 시드는 "프레임 번호 + 그 프레임의 몇 번째" 로 정하고, 에디터·다른 스레드가 만든 것은 세지 않는다. 소리 코드(호출 경로에 Audio·Sound 가 든 타입)가 쓰는 UnityEngine.Random 은 따로 둔 상태로 돌려, 소리 재생 개수 차이가 게임 판정 난수를 흔들지 않게 한다 |
 | 화면 | 기록 때의 안전 영역·DPI·노치를 재생에 그대로 줌 — Device Simulator 로 기록하고 게임뷰에서 재생해도 UI 배치가 같다 |
-| 입력 | Input System 은 이벤트 트레이스, 예전 Input 은 게임이 물은 값을 프레임별 기록 |
+| 입력 | Input System 은 이벤트 트레이스, 예전 Input 은 게임이 물은 값을 프레임별 기록. 기록 때도 실제 장치 입력을 가로채 가상 장치로 프레임 시작에 넣는다(재생과 같은 시점) — 손을 뗀 순간이 게임 Update 사이에 처리돼 "뗐다"를 놓치는 일이 녹화에만 생기지 않게 |
 | 로딩 시간 차이 | 씬·Addressables·비동기 작업 완료를 기록해, 재생 때 같은 로딩이 끝날 때까지 게임 시간을 멈춤(씬은 실제로 읽는 중일 때만. 기다린 프레임의 난수 소비는 되돌림). 씬을 일찍 다 읽으면 기록 때 열린 프레임까지 활성화를 미룸 |
 | 언어 전환 | 저장 값 안의 녹화 언어 표기(ko-KR·Korean 등)를 재생 언어로 바꾸고, 기기 언어도 그 언어로. 그래도 다르면 부팅이 끝난 뒤(START 이후) Unity Localization·I2 선택 언어를 바꿈 |
 | BGM·SFX 분리 | 반복 재생하는 10초 이상 소리를 BGM 으로 보고 패스마다 끔 |

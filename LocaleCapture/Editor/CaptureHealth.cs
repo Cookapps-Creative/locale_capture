@@ -36,8 +36,8 @@ namespace CookApps.LocaleCapture.Editor
 
             if (!BundledFfmpeg.Available) issues.Add("편집·내보내기 도구(Tools/ffmpeg.exe)가 없다");
 
-            if (CapturePatches.Problems.Count > 0)
-                issues.Add($"지난 녹화의 런타임 패치 {CapturePatches.Problems.Count}곳 실패(콘솔) — 그 코드의 시간·입력은 기록과 다를 수 있다");
+            if (CapturePatches.CoreProblems.Count > 0)
+                issues.Add($"지난 녹화의 핵심 런타임 패치 실패: {string.Join(", ", CapturePatches.CoreProblems)}(콘솔)");
             return issues;
         }
     }

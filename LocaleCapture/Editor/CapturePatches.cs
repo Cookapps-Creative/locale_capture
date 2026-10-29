@@ -29,11 +29,14 @@ namespace CookApps.LocaleCapture.Editor
         public static bool Installed => _harmony != null;
         public static int PatchedMethods { get; private set; }
         public static readonly List<string> Problems = new List<string>();
+        // 그중 핵심 패치(시계·난수 생성자·통신·로딩 등) 실패. 개별 메서드(제네릭·예외 블록 등 못 바꾸는 곳)는 Problems 에만 남는다.
+        public static readonly List<string> CoreProblems = new List<string>();
 
         public static void Install()
         {
             if (_harmony != null) return;
             Problems.Clear();
+            CoreProblems.Clear();
             PatchedMethods = 0;
             _harmony = new Harmony(Id);
             // 패치 코드를 DynamicMethod 로 만든다. 기본(MethodBuilder)은 미완성 타입이 든 동적 어셈블리를 남겨,
@@ -84,7 +87,7 @@ namespace CookApps.LocaleCapture.Editor
         private static void Try(string what, Action action)
         {
             try { action(); PatchedMethods++; }
-            catch (Exception e) { Problems.Add($"{what}: {e.GetBaseException().Message}"); }
+            catch (Exception e) { Problems.Add($"{what}: {e.GetBaseException().Message}"); CoreProblems.Add(what); }
         }
 
         // ── 바꿔 끼울 호출 ──────────────────────────────────────────────────────
@@ -295,7 +298,27 @@ namespace CookApps.LocaleCapture.Editor
 
         private static void RandomPostfix(System.Random __instance)
         {
-            if (CaptureClock.Active) SeededRandom.Invoke(__instance, new object[] { CaptureClock.NextSeed() });
+            if (!CaptureClock.Active || CalledFromEditor()) return;   // 에디터 쪽이 만든 Random 은 게임 시드 순번에 넣지 않는다
+            if (CaptureClock.TryNextSeed(out int seed)) SeededRandom.Invoke(__instance, new object[] { seed });
+        }
+
+        private static readonly Dictionary<System.Reflection.Assembly, bool> _editorAssembly = new Dictionary<System.Reflection.Assembly, bool>();
+
+        // new Random() 을 부른 첫 바깥 코드가 에디터·컴파일러 어셈블리인지. 런타임·Harmony 프레임은 건너뛴다.
+        private static bool CalledFromEditor()
+        {
+            var trace = new System.Diagnostics.StackTrace(2, false);
+            for (int i = 0; i < trace.FrameCount; i++)
+            {
+                System.Reflection.Assembly asm = trace.GetFrame(i).GetMethod()?.DeclaringType?.Assembly;
+                if (asm == null) continue;
+                string name = asm.GetName().Name;
+                if (name == "mscorlib" || name.StartsWith("System") || name == "0Harmony" || name.StartsWith("CookApps.LocaleCapture")) continue;
+                if (!_editorAssembly.TryGetValue(asm, out bool editor))
+                    _editorAssembly[asm] = editor = name.Contains("Editor") || name.StartsWith("Microsoft.CodeAnalysis") || string.IsNullOrEmpty(asm.Location);
+                return editor;
+            }
+            return false;
         }
 
         private static void PatchHttp(MethodInfo method)

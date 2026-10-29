@@ -33,7 +33,8 @@ namespace CookApps.LocaleCapture
             _frame = 0;
             _seed = seed;
             _randomCount = 0;
-            _guid = new System.Random(unchecked(seed * 7 + 3));
+            _seedFrame = -1;
+            _guid =new System.Random(unchecked(seed * 7 + 3));
             _language = language;
             _mainThread = Thread.CurrentThread.ManagedThreadId;
             _dspBase = AudioSettings.dspTime;
@@ -120,10 +121,20 @@ namespace CookApps.LocaleCapture
             for (int i = ready.Count - 1; i >= 0; i--) ready[i].TrySetResult(true);   // 등록 순서대로
         }
 
-        // new Random() 대신. 세션 안에서 만든 순서대로 같은 시드가 나온다.
-        public static System.Random NewRandom() => Active ? new System.Random(NextSeed()) : new System.Random();
+        // new Random() 대신. 같은 프레임의 몇 번째인지로 시드를 정한다 — 전역 순번이면 에디터 쪽(창·스크립트 컴파일)이
+        // 기록 중에 만든 Random 하나에 그 뒤 게임 시드가 전부 밀린다. 다른 스레드는 시점이 매번 달라 손대지 않는다.
+        public static System.Random NewRandom() => TryNextSeed(out int seed) ? new System.Random(seed) : new System.Random();
 
-        public static int NextSeed() => unchecked(_seed * 31 + 17 * _randomCount++);
+        public static bool TryNextSeed(out int seed)
+        {
+            seed = 0;
+            if (!Active || Thread.CurrentThread.ManagedThreadId != _mainThread) return false;
+            if (_seedFrame != _frame) { _seedFrame = _frame; _randomCount = 0; }
+            seed = unchecked((_seed * 31 + _frame) * 31 + 17 * _randomCount++);
+            return true;
+        }
+
+        private static int _seedFrame = -1;
 
         public static Guid NewGuid()
         {

@@ -75,6 +75,7 @@ namespace CookApps.LocaleCapture
 
         // 기록
         private InputEventTrace _trace;
+        private InputRelay _relay;
 
         // 재생
         private InputTracePlayer _player;
@@ -146,6 +147,7 @@ namespace CookApps.LocaleCapture
                 RandomTrace.Begin(_manifest.RandomCalls);
                 NetworkTape.BeginRecord(dir, Request.LiveMarkers);
                 CaptureInput.BeginRecord(Path.Combine(dir, CaptureInput.FileName));
+                _relay = new InputRelay();   // 실제 입력을 재생과 같은 시점에 넣는다(트레이스보다 먼저)
                 _trace = new InputEventTrace { recordFrameMarkers = false };   // 프레임 경계는 EventCounts 로 직접 잰다
                 _trace.Enable();
                 UncapFramePacing();
@@ -207,6 +209,7 @@ namespace CookApps.LocaleCapture
                 _toolMsSum += toolMs;
                 _toolMsMax = Math.Max(_toolMsMax, toolMs);
                 Advance();
+                _relay?.Flush();
             }
         }
 
@@ -554,6 +557,7 @@ namespace CookApps.LocaleCapture
                         if (completed) SaveRecording();
                         _trace.Dispose(); _trace = null;
                     }
+                    _relay?.Dispose(); _relay = null;
                     NetworkTape.End(_manifest?.RecordedLocale, completed);
                 }
                 else
