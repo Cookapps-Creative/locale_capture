@@ -61,24 +61,17 @@ namespace CookApps.LocaleCapture
         public List<Mute> Mutes = new List<Mute>();      // 소리를 없애는 구간
         public List<Insert> Inserts = new List<Insert>();
         public List<Speed> Speeds = new List<Speed>();
+        public List<Range> Fades = new List<Range>();     // 구간 앞 절반은 검은 화면에서 밝아지고, 뒤 절반은 다시 어두워진다
         public List<Framing> Framings = new List<Framing>();
 
-        // 페이드(초). FadeIn/FadeOut 은 결과 영상 처음·끝, JoinFade 는 잘린 경계와 클립 앞뒤.
-        public float FadeIn, FadeOut, JoinFade;
         // 목표 길이(초). 0 이면 없음. 타임라인 표시용.
         public float TargetLength;
-        // BGM 교체 음원. 있으면 녹화 BGM 대신 결과 전체에 반복해 깐다.
-        public string MusicFile;
-        public float MusicVolume = 1f;
 
         public const string FileName = "edit.json";
         public const string BgmStem = "audio_bgm.wav";
         public const string SfxStem = "audio_sfx.wav";
 
-        public bool IsEmpty => Cuts.Count == 0 && Mutes.Count == 0 && Inserts.Count == 0 && Speeds.Count == 0
-                               && FadeIn <= 0 && FadeOut <= 0 && JoinFade <= 0 && string.IsNullOrEmpty(MusicFile);
-
-        public bool HasMusic => !string.IsNullOrEmpty(MusicFile) && System.IO.File.Exists(MusicFile);
+        public bool IsEmpty => Cuts.Count == 0 && Mutes.Count == 0 && Inserts.Count == 0 && Speeds.Count == 0 && Fades.Count == 0;
 
         // 원본 시각 t 의 재생 속도. 겹치면 나중에 넣은 구간이 이긴다.
         public float RateAt(float t)
@@ -129,8 +122,8 @@ namespace CookApps.LocaleCapture
         public EditList Normalized()
         {
             Speeds ??= new List<Speed>();
+            Fades ??= new List<Range>();
             Framings ??= new List<Framing>();
-            if (MusicVolume <= 0) MusicVolume = 1f;
             return this;
         }
     }

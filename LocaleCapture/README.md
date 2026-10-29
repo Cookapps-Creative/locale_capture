@@ -53,10 +53,10 @@
 
 편집 창은 창 맨 아래 **Edit Videos** 로 연다(다른 녹화는 창 오른쪽 위 **⋮ → 다른 녹화 편집…**). 한 언어 영상을 보면서 지정한 편집은 모든 언어 영상에 똑같이 적용된다.
 
-- Set In / Set Out(I/O 키)으로 구간 → **Delete**, **Mute BGM**·**Mute SFX**·**Mute All**, **Speed**(슬라이더 0.1x–10x, 0.1 단위)
+- Set In / Set Out(I/O 키)으로 구간 → **Delete**, **Mute BGM**·**Mute SFX**·**Mute All**, **Speed**(슬라이더 0.1x–10x, 0.1 단위), **Fade In-Out**(F 키, 구간 앞 절반은 검은 화면에서 밝아지고 뒤 절반은 다시 검게 어두워짐)
 - **Insert Clip**: 재생 위치 앞에 다른 영상(언어별로 다르게도). Locale Capture 녹화 클립은 BGM·SFX 를 따로 끈다
 - **Frame**: 비율별 Blur(안에 맞추고 빈 곳 블러)·Crop(자르기, 위치 조절) 미리보기
-- **Fade** In/Out/Join, **Target** 목표 길이, **Music** BGM 교체, 실행 취소 Ctrl+Z·Ctrl+Y
+- **Target** 목표 길이, 실행 취소 Ctrl+Z·Ctrl+Y
 - **Thumbnail**: 플레이헤드 장면을 언어별·비율별 PNG
 - **Export**: 비율 토글(9:16·1:1·16:9·4:5)마다 언어별 파일. 포맷·품질·해상도는 Locale Capture 창 설정을 따른다
 - 편집·내보내기는 동봉 ffmpeg(`Tools/ffmpeg.exe`, GPL 빌드 — `FFMPEG-LICENSE.txt`)

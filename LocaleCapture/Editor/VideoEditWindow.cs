@@ -22,8 +22,9 @@ namespace CookApps.LocaleCapture.Editor
         private static readonly Color SelectedTint = new Color(0.55f, 0.75f, 1f);
 
         private enum Drag { None, Scrub, In, Out }
-        private enum Kind { Cut, Mute, Insert, Speed }
+        private enum Kind { Cut, Mute, Insert, Speed, Fade }
         private static readonly Color SpeedColor = new Color(0.75f, 0.5f, 1f, 0.95f);
+        private static readonly Color FadeColor = new Color(0.12f, 0.12f, 0.12f, 0.95f);
         private const float MinSpeed = 0.1f, MaxSpeed = 10f;
         private float _speedRate = 2f;   // Speed 버튼이 넣을 배속
 
@@ -230,30 +231,13 @@ namespace CookApps.LocaleCapture.Editor
         // 음소거 구간이 바뀌면 원본 소리를 다시 만든다(캐시되므로 같은 편집이면 즉시).
         private string SourceAudio()
         {
-            // BGM 교체 중이면 녹화 BGM 스템은 뺀다. BGM 스템만 있었다면 원본 소리는 없다.
-            string bgm = _edits.HasMusic ? null : BgmStem;
-            if (_edits.HasMusic && BgmStem != null && SfxStem == null) return null;
-            _sourceAudio = EditPreview.BuildSourceAudio(VideoFile(_locales[_previewLocale]), bgm, SfxStem, _edits.Mutes, Duration);
+            _sourceAudio = EditPreview.BuildSourceAudio(VideoFile(_locales[_previewLocale]), BgmStem, SfxStem, _edits.Mutes, Duration);
             return _sourceAudio;
         }
 
         private string ClipFile(int insert) => _edits.Inserts[insert].FileFor(_locales[_previewLocale]);
 
-        // BGM 교체 음원(결과 길이를 10초 단위로 올린 만큼 반복). 없으면 null.
-        private string MusicAudio()
-        {
-            if (!_edits.HasMusic) return null;
-            float length = Mathf.Ceil((ResultDuration + 1f) / 10f) * 10f;
-            return EditPreview.BuildMusic(_edits.MusicFile, _edits.MusicVolume, length);
-        }
-
-        // 본 소리를 틀고, BGM 교체 음원이 있으면 결과 시각에 맞춰 같이 튼다.
-        private void PlayAudio(string main, float time)
-        {
-            EditPreview.PlaySound(main, time);
-            string music = MusicAudio();
-            if (music != null) EditPreview.PlayAlso(music, ResultAt(PlayheadDisplay));
-        }
+        private void PlayAudio(string main, float time) => EditPreview.PlaySound(main, time);
 
         // 원본 소리. 배속 구간에서는 미리보기 소리를 끈다(음원만 남는다).
         private void PlaySourceAudio() => PlayAudio(Mathf.Abs(_curRate - 1f) < 0.001f ? SourceAudio() : null, _time);
@@ -261,7 +245,7 @@ namespace CookApps.LocaleCapture.Editor
         private string ClipAudio(int index)
         {
             EditList.Insert ins = _edits.Inserts[index];
-            return EditPreview.BuildClipAudio(ClipFile(index), ins.MuteBgm || _edits.HasMusic, ins.MuteSfx);
+            return EditPreview.BuildClipAudio(ClipFile(index), ins.MuteBgm, ins.MuteSfx);
         }
 
         private void Tick()
@@ -421,33 +405,15 @@ namespace CookApps.LocaleCapture.Editor
             return DisplayTotal;
         }
 
-        // 결과 영상에서 이어 붙인 경계 시각들(잘린 자리, 클립 앞뒤).
-        private List<float> JoinTimes()
-        {
-            var joins = new List<float>();
-            List<Seg> segs = ResultSegments();
-            float acc = 0;
-            for (int i = 0; i < segs.Count; i++)
-            {
-                if (i > 0 && (segs[i].Clip || segs[i - 1].Clip || segs[i].D0 - segs[i - 1].D1 > 0.001f)) joins.Add(acc);
-                acc += (segs[i].D1 - segs[i].D0) / segs[i].Rate;
-            }
-            return joins;
-        }
-
         // 미리보기 화면을 덮을 검정 비율(페이드).
         private float FadeAlpha()
         {
-            float total = ResultDuration;
-            if (total <= 0) return 0;
-            float r = ResultAt(PlayheadDisplay), a = 0;
-            if (_edits.FadeIn > 0 && r < _edits.FadeIn) a = Mathf.Max(a, 1 - r / _edits.FadeIn);
-            if (_edits.FadeOut > 0 && r > total - _edits.FadeOut) a = Mathf.Max(a, (r - (total - _edits.FadeOut)) / _edits.FadeOut);
-            if (_edits.JoinFade > 0)
-                foreach (float j in JoinTimes())
+            float a = 0;
+            if (_activeInsert < 0)
+                foreach (EditList.Range fd in _edits.Fades)
                 {
-                    float d = Mathf.Abs(r - j);
-                    if (d < _edits.JoinFade) a = Mathf.Max(a, 1 - d / _edits.JoinFade);
+                    float s = Mathf.Min(fd.Start, fd.End), e = Mathf.Max(fd.Start, fd.End), h = (e - s) / 2;
+                    if (h > 0 && _time >= s && _time <= e) a = Mathf.Max(a, Mathf.Abs(_time - (s + h)) / h);
                 }
             return Mathf.Clamp01(a);
         }
@@ -656,50 +622,17 @@ namespace CookApps.LocaleCapture.Editor
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.Space(8);
-                GUILayout.Label("Fade", GUILayout.Width(42));
-                float fadeIn = FadeField("In", _edits.FadeIn);
-                float fadeOut = FadeField("Out", _edits.FadeOut);
-                float join = FadeField("Join", _edits.JoinFade);
-                if (fadeIn != _edits.FadeIn || fadeOut != _edits.FadeOut || join != _edits.JoinFade)
-                {
-                    _edits.FadeIn = fadeIn; _edits.FadeOut = fadeOut; _edits.JoinFade = join;
-                    SaveEdits();
-                }
+                GUI.backgroundColor = FadeColor;
+                using (new EditorGUI.DisabledScope(!(_in >= 0 && _out > _in)))
+                    if (GUILayout.Button(new GUIContent("Fade In-Out  [F]", "Set In–Set Out 구간 앞 절반은 검은 화면에서 밝아지고, 뒤 절반은 다시 검게 어두워진다"), GUILayout.Width(118))) AddFade();
+                GUI.backgroundColor = Color.white;
                 GUILayout.Space(12);
                 GUILayout.Label("Target", GUILayout.Width(44));
                 int ti = Mathf.Max(0, Array.IndexOf(TargetOptions, _edits.TargetLength));
                 int picked = EditorGUILayout.Popup(ti, TargetLabels, GUILayout.Width(52));
                 if (picked != ti) { _edits.TargetLength = TargetOptions[picked]; SaveEdits(); }
-                GUILayout.Space(12);
-                GUILayout.Label("Music", GUILayout.Width(40));
-                string musicName = _edits.HasMusic ? Path.GetFileName(_edits.MusicFile) : "BGM 교체…";
-                if (GUILayout.Button(new GUIContent(musicName, _edits.MusicFile), EditorStyles.miniButton, GUILayout.MaxWidth(160))) PickMusic();
-                if (!string.IsNullOrEmpty(_edits.MusicFile))
-                {
-                    float vol = GUILayout.HorizontalSlider(_edits.MusicVolume, 0.05f, 2f, GUILayout.Width(70));
-                    if (Mathf.Abs(vol - _edits.MusicVolume) > 0.001f) { _edits.MusicVolume = vol; SaveEdits(); }
-                    if (GUILayout.Button("×", EditorStyles.miniButton, GUILayout.Width(22))) { StopPlayback(); _edits.MusicFile = null; SaveEdits(); }
-                }
                 GUILayout.FlexibleSpace();
             }
-        }
-
-        private static float FadeField(string label, float value)
-        {
-            GUILayout.Label(label, EditorStyles.miniLabel, GUILayout.Width(label.Length * 7 + 4));
-            return Mathf.Clamp(EditorGUILayout.DelayedFloatField(value, GUILayout.Width(34)), 0, 5);
-        }
-
-        private void PickMusic()
-        {
-            string file = EditorUtility.OpenFilePanel("BGM 교체", "", "mp3,wav,ogg,m4a,aac,flac");
-            if (string.IsNullOrEmpty(file)) return;
-            if (BgmStem == null && !EditorUtility.DisplayDialog("BGM 교체",
-                    "이 녹화에는 BGM 스템이 없어 원래 BGM을 뺄 수 없습니다. 새 음원이 원래 소리 위에 겹칩니다.", "그래도 사용", "취소"))
-                return;
-            StopPlayback();
-            _edits.MusicFile = file;
-            SaveEdits();
         }
 
         private void AddSpeed(float rate)
@@ -885,6 +818,18 @@ namespace CookApps.LocaleCapture.Editor
                     first = false;
                 }
             }
+            for (int i = 0; i < _edits.Fades.Count; i++)
+            {
+                bool first = true;
+                foreach ((float a, float b) in Pieces(_edits.Fades[i].Start, _edits.Fades[i].End))
+                {
+                    Rect band = FadeBand(r, a, b);
+                    EditorGUI.DrawRect(band, FadeColor);
+                    if (first) GUI.Label(band, "페이드", BlockLabel);
+                    if (IsSelected(Kind.Fade, i)) DrawOutline(band);
+                    first = false;
+                }
+            }
             foreach (Slot x in Slots())
             {
                 EditList.Insert ins = _edits.Inserts[x.Index];
@@ -999,6 +944,8 @@ namespace CookApps.LocaleCapture.Editor
             {
                 for (int i = 0; i < _edits.Speeds.Count; i++)
                     if (Pieces(_edits.Speeds[i].Start, _edits.Speeds[i].End).Any(p => SpeedBand(video, p.a, p.b).Contains(mouse))) return (Kind.Speed, i);
+                for (int i = 0; i < _edits.Fades.Count; i++)
+                    if (Pieces(_edits.Fades[i].Start, _edits.Fades[i].End).Any(p => FadeBand(video, p.a, p.b).Contains(mouse))) return (Kind.Fade, i);
                 for (int i = 0; i < _edits.Cuts.Count; i++)
                     if (Pieces(_edits.Cuts[i].Start, _edits.Cuts[i].End).Any(p => Block(video, p.a, p.b).Contains(mouse))) return (Kind.Cut, i);
                 return null;
@@ -1021,7 +968,7 @@ namespace CookApps.LocaleCapture.Editor
             {
                 GUILayout.Label("Edits", EditorStyles.boldLabel);
                 GUILayout.FlexibleSpace();
-                GUILayout.Label($"삭제 {_edits.Cuts.Count} · 음소거 {_edits.Mutes.Count} · 배속 {_edits.Speeds.Count} · 삽입 {_edits.Inserts.Count}", EditorStyles.miniLabel);
+                GUILayout.Label($"삭제 {_edits.Cuts.Count} · 음소거 {_edits.Mutes.Count} · 배속 {_edits.Speeds.Count} · 페이드 {_edits.Fades.Count} · 삽입 {_edits.Inserts.Count}", EditorStyles.miniLabel);
             }
             _listScroll = EditorGUILayout.BeginScrollView(_listScroll);
             bool changed = false;
@@ -1093,6 +1040,27 @@ namespace CookApps.LocaleCapture.Editor
             }
             if (removeSpeed >= 0) { _edits.Speeds.RemoveAt(removeSpeed); _selected = null; changed = true; }
 
+            int removeFade = -1;
+            for (int i = 0; i < _edits.Fades.Count; i++)
+            {
+                EditList.Range fd = _edits.Fades[i];
+                GUI.backgroundColor = IsSelected(Kind.Fade, i) ? SelectedTint : Color.white;
+                using (new EditorGUILayout.HorizontalScope(Row))
+                {
+                    GUI.backgroundColor = Color.white;
+                    Swatch(FadeColor); GUILayout.Label("페이드", GUILayout.Width(60));
+                    float s = EditorGUILayout.FloatField(fd.Start, GUILayout.Width(64));
+                    GUILayout.Label("–", GUILayout.Width(10));
+                    float en = EditorGUILayout.FloatField(fd.End, GUILayout.Width(64));
+                    GUILayout.Label($"({Fmt(fd.Start)} – {Fmt(fd.End)})", EditorStyles.miniLabel);
+                    if (Math.Abs(s - fd.Start) > 0.0001f || Math.Abs(en - fd.End) > 0.0001f) { _edits.Fades[i] = new EditList.Range { Start = s, End = en }; changed = true; }
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button("이동", EditorStyles.miniButton, GUILayout.Width(40))) Seek(fd.Start);
+                    if (GUILayout.Button("×", EditorStyles.miniButton, GUILayout.Width(22))) removeFade = i;
+                }
+            }
+            if (removeFade >= 0) { _edits.Fades.RemoveAt(removeFade); _selected = null; changed = true; }
+
             int removeInsert = -1;
             for (int i = 0; i < _edits.Inserts.Count; i++)
             {
@@ -1122,7 +1090,7 @@ namespace CookApps.LocaleCapture.Editor
             }
             if (removeInsert >= 0) { _edits.Inserts.RemoveAt(removeInsert); _selected = null; changed = true; }
 
-            if (_edits.IsEmpty) GUILayout.Label("구간을 잡고 Delete/Mute 를 누르거나, Insert Clip 으로 영상을 끼운다.", EditorStyles.centeredGreyMiniLabel);
+            if (_edits.IsEmpty) GUILayout.Label("구간을 잡고 Delete/Mute/Fade 를 누르거나, Insert Clip 으로 영상을 끼운다.", EditorStyles.centeredGreyMiniLabel);
             EditorGUILayout.EndScrollView();
             if (changed) SaveEdits();
         }
@@ -1139,6 +1107,15 @@ namespace CookApps.LocaleCapture.Editor
             if (!(_in >= 0 && _out > _in)) return;
             _edits.Cuts.Add(new EditList.Range { Start = _in, End = _out });
             _selected = (Kind.Cut, _edits.Cuts.Count - 1);
+            _in = _out = -1;
+            SaveEdits();
+        }
+
+        private void AddFade()
+        {
+            if (!(_in >= 0 && _out > _in)) return;
+            _edits.Fades.Add(new EditList.Range { Start = _in, End = _out });
+            _selected = (Kind.Fade, _edits.Fades.Count - 1);
             _in = _out = -1;
             SaveEdits();
         }
@@ -1199,6 +1176,7 @@ namespace CookApps.LocaleCapture.Editor
             else if (kind == Kind.Mute && index < _edits.Mutes.Count) _edits.Mutes.RemoveAt(index);
             else if (kind == Kind.Insert && index < _edits.Inserts.Count) _edits.Inserts.RemoveAt(index);
             else if (kind == Kind.Speed && index < _edits.Speeds.Count) _edits.Speeds.RemoveAt(index);
+            else if (kind == Kind.Fade && index < _edits.Fades.Count) _edits.Fades.RemoveAt(index);
             _selected = null;
             SaveEdits();
         }
@@ -1219,6 +1197,7 @@ namespace CookApps.LocaleCapture.Editor
                 case KeyCode.B: AddMute(MuteTarget.Bgm); break;
                 case KeyCode.S: AddMute(MuteTarget.Sfx); break;
                 case KeyCode.M: AddMute(MuteTarget.All); break;
+                case KeyCode.F: AddFade(); break;
                 case KeyCode.Delete:
                 case KeyCode.Backspace:
                     if (_in >= 0 && _out > _in) AddCut(); else DeleteSelected();
@@ -1347,6 +1326,12 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         // 비디오 트랙 아래쪽 띠(배속 구간)
+        private Rect FadeBand(Rect track, float a, float b)
+        {
+            Rect block = Block(track, a, b);
+            return new Rect(block.x, block.y, block.width, 12);
+        }
+
         private Rect SpeedBand(Rect track, float a, float b)
         {
             Rect block = Block(track, a, b);

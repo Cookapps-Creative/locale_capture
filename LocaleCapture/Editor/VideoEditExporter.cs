@@ -20,7 +20,6 @@ namespace CookApps.LocaleCapture.Editor
             public float Rate;         // 원본 구간 배속
             public string File;        // 클립
             public bool MuteBgm, MuteSfx;
-            public bool JoinBefore;    // 앞 조각과 이어지지 않는 경계(페이드 대상)
         }
 
         private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
@@ -77,7 +76,6 @@ namespace CookApps.LocaleCapture.Editor
 
             var inputs = new List<string> { $"-i \"{sourceFile}\"" };
             var f = new StringBuilder();
-            bool music = edits.HasMusic;
 
             // 출력 크기. 조각마다 이 크기로 맞춘 뒤 잇는다(클립도 자기 비율에서 바로 맞춰 검은 띠가 생기지 않게).
             int outW = frameWidth > 0 && frameHeight > 0 ? frameWidth : src.Width & ~1;
@@ -102,7 +100,7 @@ namespace CookApps.LocaleCapture.Editor
             if (hasBgm || hasSfx)
             {
                 var pads = new List<string>();
-                if (hasBgm && !music)
+                if (hasBgm)
                 {
                     inputs.Add($"-i \"{bgmStem}\"");
                     f.Append($"[{inputs.Count - 1}:a]aformat=sample_rates=48000:channel_layouts=stereo{MuteFilter(edits, MuteTarget.Bgm)}[bgm];");
@@ -126,7 +124,7 @@ namespace CookApps.LocaleCapture.Editor
             int sourceCount = items.Count(i => !i.IsClip);
             if (sourceCount > 0)
             {
-                f.Append($"[0:v]split={sourceCount}");
+                f.Append($"{FadeChain(edits, src, fps, f)}split={sourceCount}");
                 for (int i = 0; i < sourceCount; i++) f.Append($"[sv{i}]");
                 f.Append(';');
                 if (sourceAudio != null)
@@ -143,15 +141,13 @@ namespace CookApps.LocaleCapture.Editor
             {
                 Item it = items[k];
                 float len = lengths[k];
-                string vf = JoinFades(edits.JoinFade, len, it.JoinBefore, k + 1 < items.Count && items[k + 1].JoinBefore, "fade");
-                string af = JoinFades(edits.JoinFade, len, it.JoinBefore, k + 1 < items.Count && items[k + 1].JoinBefore, "afade");
                 if (!it.IsClip)
                 {
                     f.Append($"[sv{srcIndex}]trim=start={F(it.Start)}:end={F(it.End)},setpts=(PTS-STARTPTS)/{F(it.Rate)}[t{k}];");
                     f.Append(FrameFilter($"[t{k}]", src.Width, src.Height, outW, outH, framing.Crop, framing.Focus, $"[f{k}]", k.ToString()) + ";");
-                    f.Append($"[f{k}]fps={fps},format=yuv420p{vf}[v{k}];");
+                    f.Append($"[f{k}]fps={fps},format=yuv420p[v{k}];");
                     if (sourceAudio != null)
-                        f.Append($"[sa{srcIndex}]atrim=start={F(it.Start)}:end={F(it.End)},asetpts=PTS-STARTPTS{Atempo(it.Rate)}{af}[a{k}];");
+                        f.Append($"[sa{srcIndex}]atrim=start={F(it.Start)}:end={F(it.End)},asetpts=PTS-STARTPTS{Atempo(it.Rate)}[a{k}];");
                     else
                     {
                         inputs.Add($"-f lavfi -t {F(len)} -i anullsrc=r=48000:cl=stereo");
@@ -167,10 +163,9 @@ namespace CookApps.LocaleCapture.Editor
                     BundledFfmpeg.MediaInfo ci = clipInfo[it.File];
                     f.Append($"[{idx}:v]setpts=PTS-STARTPTS[t{k}];");
                     f.Append(FrameFilter($"[t{k}]", ci.Width, ci.Height, outW, outH, framing.Crop, framing.Focus, $"[f{k}]", k.ToString()) + ";");
-                    f.Append($"[f{k}]fps={fps},format=yuv420p{vf}[v{k}];");
+                    f.Append($"[f{k}]fps={fps},format=yuv420p[v{k}];");
                     string dur = F(len);
-                    // BGM 교체 중이면 Locale Capture 클립의 BGM 도 뺀다.
-                    bool muteBgm = it.MuteBgm || music;
+                    bool muteBgm = it.MuteBgm;
                     if ((muteBgm || it.MuteSfx) && EditList.ClipStems(it.File, out string cb, out string cs))
                     {
                         // Locale Capture 녹화: 클립 소리 대신 스템을 쓰고, 끈 쪽은 뺀다.
@@ -180,13 +175,13 @@ namespace CookApps.LocaleCapture.Editor
                         if (pads.Count == 0)
                         {
                             inputs.Add($"-f lavfi -t {dur} -i anullsrc=r=48000:cl=stereo");
-                            f.Append($"[{inputs.Count - 1}:a]anull{af}[a{k}];");
+                            f.Append($"[{inputs.Count - 1}:a]anull[a{k}];");
                         }
-                        else if (pads.Count == 1) f.Append($"{pads[0]}anull{af}[a{k}];");
-                        else f.Append($"{pads[0]}{pads[1]}amix=inputs=2:duration=longest:normalize=0{af}[a{k}];");
+                        else if (pads.Count == 1) f.Append($"{pads[0]}anull[a{k}];");
+                        else f.Append($"{pads[0]}{pads[1]}amix=inputs=2:duration=longest:normalize=0[a{k}];");
                     }
                     else if (clipInfo[it.File].HasAudio)
-                        f.Append($"[{idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=end={dur},asetpts=PTS-STARTPTS{af}[a{k}];");
+                        f.Append($"[{idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=end={dur},asetpts=PTS-STARTPTS[a{k}];");
                     else
                     {
                         inputs.Add($"-f lavfi -t {dur} -i anullsrc=r=48000:cl=stereo");
@@ -195,22 +190,7 @@ namespace CookApps.LocaleCapture.Editor
                 }
                 concatPads.Append($"[v{k}][a{k}]");
             }
-            f.Append($"{concatPads}concat=n={items.Count}:v=1:a=1[cv][ca];");
-
-            // 처음·끝 페이드
-            string videoFades = GlobalFades(edits, total, "fade");
-            string audioFades = GlobalFades(edits, total, "afade");
-            f.Append($"[cv]{(videoFades.Length > 0 ? videoFades.Substring(1) : "null")}[v];");
-
-            string audio = "[ca]";
-            if (music)
-            {
-                inputs.Add($"-stream_loop -1 -i \"{edits.MusicFile}\"");
-                f.Append($"[{inputs.Count - 1}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={F(edits.MusicVolume)},atrim=end={F(total)},asetpts=PTS-STARTPTS[mus];");
-                f.Append("[ca][mus]amix=inputs=2:duration=first:normalize=0[cm];");
-                audio = "[cm]";
-            }
-            f.Append($"{audio}{(audioFades.Length > 0 ? audioFades.Substring(1) : "anull")}[a]");
+            f.Append($"{concatPads}concat=n={items.Count}:v=1:a=1[v][a]");
 
             string args = $"-y -loglevel error -stats {string.Join(" ", inputs)} -filter_complex \"{f}\" -map \"[v]\" -map \"[a]\" " +
                           $"-r {fps} {EncoderArgs(encode)} \"{outputFile}\"";
@@ -263,22 +243,28 @@ namespace CookApps.LocaleCapture.Editor
             return sb.ToString();
         }
 
-        private static string JoinFades(float fade, float len, bool fadeIn, bool fadeOut, string filter)
+        // 구간 페이드: 원본 시각에 검은 판을 겹친다. 앞 절반은 검은 판이 걷히고(밝아짐), 뒤 절반은 덮인다(어두워짐).
+        // 원본 영상 패드를 돌려준다.
+        private static string FadeChain(EditList edits, BundledFfmpeg.MediaInfo src, int fps, StringBuilder f)
         {
-            float d = Math.Min(fade, len / 2);
-            if (d <= 0.001f) return "";
-            string s = "";
-            if (fadeIn) s += $",{filter}=t=in:st=0:d={F(d)}";
-            if (fadeOut) s += $",{filter}=t=out:st={F(len - d)}:d={F(d)}";
-            return s;
-        }
-
-        private static string GlobalFades(EditList edits, float total, string filter)
-        {
-            string s = "";
-            if (edits.FadeIn > 0) s += $",{filter}=t=in:st=0:d={F(Math.Min(edits.FadeIn, total))}";
-            if (edits.FadeOut > 0) { float d = Math.Min(edits.FadeOut, total); s += $",{filter}=t=out:st={F(total - d)}:d={F(d)}"; }
-            return s;
+            string pad = "[0:v]";
+            int n = 0;
+            void Layer(string fade, float from, float to)
+            {
+                f.Append($"color=black:s={src.Width}x{src.Height}:r={fps}:d={F(src.Duration)},format=yuva420p,{fade}[fk{n}];");
+                f.Append($"{pad}[fk{n}]overlay=eof_action=pass:enable='between(t,{F(from)},{F(to)})'[fv{n}];");
+                pad = $"[fv{n}]";
+                n++;
+            }
+            foreach (EditList.Range fd in edits.Fades)
+            {
+                float a = Math.Max(0, Math.Min(fd.Start, fd.End)), b = Math.Min(src.Duration, Math.Max(fd.Start, fd.End));
+                float len = (b - a) / 2;
+                if (len < 0.02f) continue;
+                Layer($"fade=t=out:st={F(a)}:d={F(len)}:alpha=1", a, a + len);
+                Layer($"fade=t=in:st={F(b - len)}:d={F(len)}:alpha=1", b - len, b);
+            }
+            return pad;
         }
 
         // 해당 스템에 적용할 음소거 구간. All 은 모든 스템에, 스템이 없을 때(allOnly)는 모든 구간을 영상 소리에.
@@ -321,12 +307,6 @@ namespace CookApps.LocaleCapture.Editor
             }
             for (; next < inserts.Count; next++) items.Add(new Item { IsClip = true, File = inserts[next].FileFor(locale), MuteBgm = inserts[next].MuteBgm, MuteSfx = inserts[next].MuteSfx });
 
-            for (int k = 0; k < items.Count; k++)
-            {
-                Item it = items[k];
-                it.JoinBefore = k > 0 && !(!it.IsClip && !items[k - 1].IsClip && Math.Abs(items[k - 1].End - it.Start) < 0.0001f);
-                items[k] = it;
-            }
             return items;
         }
 

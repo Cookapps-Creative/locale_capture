@@ -191,18 +191,6 @@ namespace CookApps.LocaleCapture.Editor
             return err.Length == 0 && File.Exists(output) ? output : null;
         }
 
-        // BGM 교체 음원을 결과 길이만큼 반복해 깐 소리.
-        public static string BuildMusic(string file, float volume, float length)
-        {
-            if (!BundledFfmpeg.Available || string.IsNullOrEmpty(file) || !File.Exists(file) || length <= 0) return null;
-            var ci = CultureInfo.InvariantCulture;
-            string output = Path.Combine(CacheRoot, Key(file, $"music|{volume.ToString(ci)}|{length.ToString("0.00", ci)}") + ".wav");
-            if (File.Exists(output)) return output;
-            Directory.CreateDirectory(CacheRoot);
-            string err = BundledFfmpeg.Run($"-y -loglevel error -stream_loop -1 -i \"{file}\" -vn -af \"volume={volume.ToString(ci)}\" -t {length.ToString(ci)} -ac 2 -ar 48000 -c:a pcm_s16le \"{output}\"");
-            return err.Length == 0 && File.Exists(output) ? output : null;
-        }
-
         private static string Mute(IList<EditList.Mute> mutes, MuteTarget target, bool all)
         {
             var ci = CultureInfo.InvariantCulture;
@@ -226,12 +214,6 @@ namespace CookApps.LocaleCapture.Editor
         public static void PlaySound(string wav, float time)
         {
             StopSound();
-            PlayAlso(wav, time);
-        }
-
-        // 지금 나는 소리를 끄지 않고 하나 더 튼다(BGM 교체 음원).
-        public static void PlayAlso(string wav, float time)
-        {
             if (string.IsNullOrEmpty(wav) || !File.Exists(wav) || !SoundAvailable) return;
             string alias = "lcpreview" + ++_next;
             if (Mci($"open \"{wav}\" type waveaudio alias {alias}") != 0) return;
