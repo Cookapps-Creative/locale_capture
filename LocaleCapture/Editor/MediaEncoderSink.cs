@@ -73,7 +73,7 @@ namespace CookApps.LocaleCapture.Editor
                 _flipped.CopyFrom(_scratch);
                 data = _flipped;
             }
-            TextureFormat fmt = _format.Bgra ? TextureFormat.BGRA32 : TextureFormat.RGBA32;
+            TextureFormat fmt = _format.BgraHint ? TextureFormat.BGRA32 : TextureFormat.RGBA32;
             _encoders[localeIndex].AddFrame(_format.Width, _format.Height, _format.Width * 4, fmt, data);
         }
 

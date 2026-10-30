@@ -17,6 +17,20 @@ namespace CookApps.LocaleCapture.Editor
         public static void ShowSimulator() => Show(SimulatorType, GameViewType);
         public static void ShowGame() => Show(GameViewType, SimulatorType);
 
+        // Game 뷰 최대화를 켜거나 끈다. 이전 상태를 돌려준다. 재생 동안 켜 두면 다른 창(Inspector·Hierarchy 등)이 매 프레임 그리지 않는다.
+        public static bool SetGameMaximized(bool on)
+        {
+            try
+            {
+                EditorWindow window = GameViewType == null ? null : Resources.FindObjectsOfTypeAll(GameViewType).OfType<EditorWindow>().FirstOrDefault();
+                if (window == null) return false;
+                bool was = window.maximized;
+                if (was != on) window.maximized = on;   // 떠 있는(도킹 안 된) 창은 Unity 가 무시한다
+                return was;
+            }
+            catch (Exception e) { Debug.LogWarning("[LocaleCapture] Game 뷰 최대화를 바꾸지 못했다: " + e.GetBaseException().Message); return false; }
+        }
+
         // 열려 있으면 앞으로, 없으면 다른 뷰 옆에 탭으로 연다.
         private static void Show(Type type, Type dockNextTo)
         {

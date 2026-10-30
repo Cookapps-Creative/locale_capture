@@ -39,6 +39,7 @@ namespace CookApps.LocaleCapture.Editor
             public bool StartSceneOverridden;
             public string SavedStartScene;
             public bool RetryingRealtime;   // 지금 패스는 빠르게 뽑은 게 녹화와 달라 실제 속도로 다시 뽑는 중
+            public int SavedGameViewMaximized = -1;   // 재생 동안 Game 뷰를 최대화(다른 창이 매 프레임 그리지 않게) — 끝나면 되돌린다
         }
 
         private const string Idle = "Idle", Recording = "Recording", Rendering = "Rendering", Cancelling = "Cancelling";
@@ -212,6 +213,7 @@ namespace CookApps.LocaleCapture.Editor
                     Realtime = realtime,
                 };
                 PlayViewSwitch.ShowGame();   // 언어별 재생은 Game 뷰에서 기록 때 화면 크기로
+                if (_state.SavedGameViewMaximized < 0) _state.SavedGameViewMaximized = PlayViewSwitch.SetGameMaximized(true) ? 1 : 0;
                 if (manifest.Width > 0 && !GameViewResolution.Matches(manifest.Width, manifest.Height)) GameViewResolution.Set(manifest.Width, manifest.Height);
                 AllowLocalHttp();
                 UnmuteAudio();
@@ -343,6 +345,8 @@ namespace CookApps.LocaleCapture.Editor
             }
             CapturePatches.Uninstall();
             CaptureBoot.Pending = null;
+            CaptureRender.EndLowRes();   // 세션이 못 되돌렸어도 렌더 스케일은 꼭 원래대로
+            if (_state.SavedGameViewMaximized >= 0) { PlayViewSwitch.SetGameMaximized(_state.SavedGameViewMaximized == 1); _state.SavedGameViewMaximized = -1; }
             PlayViewSwitch.ShowSimulator();   // 다 끝나면 다시 Simulator 로
             string dir = _state.Directory;
             _state.Phase = Idle;

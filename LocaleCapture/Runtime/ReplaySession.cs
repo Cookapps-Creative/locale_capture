@@ -277,7 +277,9 @@ namespace CookApps.LocaleCapture
             {
                 Width = outWidth, Height = outHeight, FrameRate = _manifest.Fps,
                 SampleRate = AudioSettings.outputSampleRate, Channels = audio ? _channels : 0,
-                OutputBase = outputBase, Bgra = _copy != null && _copy.graphicsFormat.ToString().StartsWith("B8G8R8A8"),
+                OutputBase = outputBase,
+                Bgra = _copy != null && CaptureRender.ReadbackIsBgra(_copy),   // 실제로 읽어 본 순서(ffmpeg)
+                BgraHint = _copy != null && _copy.graphicsFormat.ToString().StartsWith("B8G8R8A8"),   // 포맷 이름(Unity 내장 인코더가 맞춰져 있던 값)
             };
             _sink.Begin(format, new[] { Request.Locale });
             if (video && !string.IsNullOrEmpty(Request.Stem))
@@ -298,6 +300,8 @@ namespace CookApps.LocaleCapture
                 : int.MaxValue;
             _player.QueueFrame(0);
             _replayClock.Restart();
+            // 영상에 남지 않는 구간은 작게 그린다 — 영상 패스는 START 전, 스템 패스는 끝까지(RestoreFramePacing 이 되돌린다).
+            if (!video || _manifest.VideoStartFrame > 1) CaptureRender.BeginLowRes();
             while (Frame < TotalFrames && !_finished)
             {
                 yield return FrameEnd;
@@ -375,6 +379,8 @@ namespace CookApps.LocaleCapture
                 UiTrace.Check(Frame, _replayUi);
                 CaptureVerify.FrameTime(FrameMs());
                 Advance();
+                // 다음에 그릴 프레임(Frame)이 START 직전이면 본래 크기로 돌려, START 프레임부터 온전히 찍힌다.
+                if (video && CaptureRender.LowRes && Frame + 1 >= _manifest.VideoStartFrame) CaptureRender.EndLowRes();
                 while (_nextToggle < _manifest.Toggles.Count && _manifest.Toggles[_nextToggle].Frame <= Frame)
                     InspectorToggles.Apply(_manifest.Toggles[_nextToggle++]);
                 if (Frame < TotalFrames) _player.QueueFrame(Frame);
@@ -526,6 +532,7 @@ namespace CookApps.LocaleCapture
 
         private void RestoreFramePacing()
         {
+            CaptureRender.EndLowRes();
             Time.captureDeltaTime = 0f;
             QualitySettings.vSyncCount = _savedVSync;
             Application.targetFrameRate = _savedTargetFps;

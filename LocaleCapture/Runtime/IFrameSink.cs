@@ -13,8 +13,10 @@ namespace CookApps.LocaleCapture
         public int Channels;
         // 출력 경로 앞부분. 싱크가 "_<로케일>.<확장자>" 를 붙인다.
         public string OutputBase;
-        // 픽셀 채널 순서. false 면 RGBA.
+        // 픽셀 채널 순서(실제로 읽어 본 값). false 면 RGBA.
         public bool Bgra;
+        // 렌더텍스처 포맷 이름으로 짐작한 순서. Unity 내장 인코더(MediaEncoder)는 이 값에 맞춰져 있었다.
+        public bool BgraHint;
     }
 
     // 프레임을 받아 파일로 쓰는 쪽. 세션은 캡처만 하고 인코딩은 모른다.
