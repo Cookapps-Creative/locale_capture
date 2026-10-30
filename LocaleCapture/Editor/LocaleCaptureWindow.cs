@@ -139,6 +139,8 @@ namespace CookApps.LocaleCapture.Editor
 
                 Section("Input");
                 _settings.StartOnPlay = EditorGUI.Toggle(Row("바로 녹화"), _settings.StartOnPlay);
+                _settings.RealtimeReplay = !EditorGUI.Toggle(Row(new GUIContent("빠른 녹화",
+                    "언어별 영상을 실제 속도보다 빠르게 뽑는다. 결과물 속도는 같다. 녹화와 다르게 흘러간 언어는 실제 속도로 한 번 더 뽑는다.")), !_settings.RealtimeReplay);
                 DrawLocales();
                 DrawResolution();
                 _settings.FrameRate = EditorGUI.IntSlider(Row("Frame Rate"), _settings.FrameRate, 15, 60);
@@ -180,12 +182,14 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         // 한 줄: 왼쪽 라벨 칸(고정 폭) + 오른쪽 값 칸. 값 칸 Rect 를 돌려준다.
-        private static Rect Row(string label)
+        private static Rect Row(string label) => Row(new GUIContent(label));
+
+        private static Rect Row(GUIContent label)
         {
             Rect r = EditorGUILayout.GetControlRect(false, EditorGUIUtility.singleLineHeight);
             r.xMin += Pad;
             r.xMax -= Pad;
-            if (!string.IsNullOrWhiteSpace(label)) EditorGUI.LabelField(new Rect(r.x + LabelIndent, r.y, LabelWidth - LabelIndent, r.height), label);
+            if (!string.IsNullOrWhiteSpace(label.text)) EditorGUI.LabelField(new Rect(r.x + LabelIndent, r.y, LabelWidth - LabelIndent, r.height), label);
             return new Rect(r.x + LabelWidth, r.y, r.width - LabelWidth, r.height);
         }
 

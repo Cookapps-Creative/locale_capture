@@ -53,6 +53,10 @@ namespace CookApps.LocaleCapture.Editor
             TargetCache.Load();
             PatchCallSites();
             TargetCache.Save();
+            // 코루틴 실시간 대기는 엔진 어셈블리 안에서 실제 시계를 읽는다(호출 위치 패치가 닿지 않는다) — 그 안쪽도 세션 시계로.
+            Try("WaitForSecondsRealtime", () => _harmony.Patch(AccessTools.PropertyGetter(typeof(WaitForSecondsRealtime), nameof(WaitForSecondsRealtime.keepWaiting))
+                    ?? throw new MissingMethodException("WaitForSecondsRealtime.keepWaiting"),
+                transpiler: new HarmonyMethod(typeof(CapturePatches), nameof(TranspileShared))));
             Try("System.Random 생성자", () => _harmony.Patch(AccessTools.Constructor(typeof(System.Random), Type.EmptyTypes),
                 postfix: new HarmonyMethod(typeof(CapturePatches), nameof(RandomPostfix))));
             Try("HttpMessageInvoker.SendAsync", () => PatchHttp(typeof(HttpMessageInvoker).GetMethod("SendAsync", new[] { typeof(HttpRequestMessage), typeof(CancellationToken) })));

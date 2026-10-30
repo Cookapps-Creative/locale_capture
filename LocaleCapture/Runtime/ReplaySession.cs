@@ -21,6 +21,7 @@ namespace CookApps.LocaleCapture
     {
         private const float SceneHoldSeconds = 20f;   // 씬 로드를 이만큼 기다려도 안 오면 그냥 간다
         private const float LoadHoldSeconds = 5f;     // 그 밖의 로딩
+        private const float ServerHoldSeconds = 20f;  // 실제 서버에서 받는 응답
         private const float BgmMinLength = 10f;       // 반복 재생하는 이 길이 이상의 소리를 BGM 으로 본다
 
         public static ReplaySession Current { get; private set; }
@@ -60,6 +61,8 @@ namespace CookApps.LocaleCapture
         // 재생에서 이 프레임 전까지는 30fps 로 묶지 않고 빨리 돈다(부팅 — 첫 입력·START 전, 영상에 안 남는 구간).
         // 로딩은 동기 지점이 붙잡고, 서버 응답·시계·Task.Delay 는 프레임 기준이라 빨리 돌아도 같은 프레임에 끝난다.
         private int _fastUntil;
+        private readonly System.Diagnostics.Stopwatch _replayClock = new System.Diagnostics.Stopwatch();   // 재생에 걸린 실제 시간(로그)
+        private double _startReachedSeconds = -1;
         private int _nextToggle;   // 재생에서 다음에 적용할 인스펙터 켜기/끄기
 
         private void Pace()
@@ -173,15 +176,17 @@ namespace CookApps.LocaleCapture
                 _passName = Request.Type == SessionRequest.Kind.Video ? Request.Locale : Request.Type == SessionRequest.Kind.BgmStem ? "bgm" : "sfx";
                 CaptureClock.Begin(_manifest.ClockBaseUtcTicks, _manifest.BaseTickCount, fps, _manifest.Seed,
                     Request.OverrideSystemLanguage ? Request.SystemLanguage : (SystemLanguage?) null);
-                NetworkTape.BeginReplay(dir, Request.Locale, Request.LiveMarkers, fps);
+                NetworkTape.BeginReplay(dir, Request.Locale, Request.LiveMarkers, fps,
+                    string.IsNullOrEmpty(Request.RecordedLocale) ? _manifest.RecordedLocale : Request.RecordedLocale, Request.RecordedLocaleForms);
                 CaptureScreen.Begin(_manifest, false);
                 CaptureInput.BeginReplay(Path.Combine(dir, CaptureInput.FileName));
                 CaptureVerify.Begin(_passName, Request.Locale, _manifest.RandomCalls, _manifest.Taps, _replayTaps, _manifest.UiEvents, _replayUi);
                 RandomTrace.Begin(new List<RandomTrace.Call>());
                 _player = new InputTracePlayer(Path.Combine(dir, _manifest.TraceFile), _manifest.EventCounts);
                 UncapFramePacing();
-                // 재생도 기록과 같은 실제 속도로 돈다 — 실시간으로 끝나는 로딩·통신이 기록과 비슷한 프레임에 끝나게.
-                Application.targetFrameRate = fps;
+                // 실제 속도 재생은 기록과 같은 속도로 돈다 — 실시간으로 끝나는 로딩·통신이 기록과 비슷한 프레임에 끝나게.
+                // 빠른 재생은 묶지 않는다. 로딩·서버 응답은 동기 지점과 응답 대기가 기록 프레임에 맞춘다.
+                Application.targetFrameRate = Request.Realtime ? fps : -1;
                 Status = Request.Type == SessionRequest.Kind.Video ? $"{Request.Locale} 녹화" : Request.Type == SessionRequest.Kind.BgmStem ? "BGM 스템" : "SFX 스템";
             }
             Time.captureDeltaTime = 1f / fps;
@@ -288,14 +293,18 @@ namespace CookApps.LocaleCapture
             int nextMarker = 0;
             float holdStarted = -1f;
             int firstInput = _manifest.EventCounts.FindIndex(c => c > 0);
-            _fastUntil = Math.Max(0, Math.Min(firstInput < 0 ? _manifest.Frames : firstInput, _manifest.VideoStartFrame > 0 ? _manifest.VideoStartFrame : int.MaxValue) - 30);
+            _fastUntil = Request.Realtime
+                ? Math.Max(0, Math.Min(firstInput < 0 ? _manifest.Frames : firstInput, _manifest.VideoStartFrame > 0 ? _manifest.VideoStartFrame : int.MaxValue) - 30)
+                : int.MaxValue;
             _player.QueueFrame(0);
+            _replayClock.Restart();
             while (Frame < TotalFrames && !_finished)
             {
                 yield return FrameEnd;
                 if (Frame >= _fastUntil) Pace();
                 Application.targetFrameRate = Frame + 1 < _fastUntil ? -1 : _manifest.Fps;
                 if (_finished) break;
+                if (Frame == _manifest.VideoStartFrame) _startReachedSeconds = _replayClock.Elapsed.TotalSeconds;
                 if (Frame == 1) { _player.DisableRealDevices(); AddressablesProbe.Register(); }
 
                 _drain.Clear();
@@ -325,23 +334,34 @@ namespace CookApps.LocaleCapture
                 // (이번 프레임 끝에 풀면 다음 프레임에 열린다).
                 CaptureMarkers.GateActivation = NextSceneFrame(nextMarker) > Frame + 1;
                 if (!CaptureMarkers.GateActivation) CaptureMarkers.ReleaseActivation();
-                if (hold)
+                // 로딩이 아니면 서버 응답: 기록 때 이 프레임까지 왔던 응답(언어별로 실제 서버에서 받는 것 등)이 아직이면 기다린다.
+                string waitingFor = hold ? _manifest.Markers[nextMarker].Name : null;
+                string server = waitingFor == null ? NetworkTape.Overdue() : null;
+                if (server != null) waitingFor = "서버:" + server;
+                if (waitingFor != null)
                 {
-                    string expected = _manifest.Markers[nextMarker].Name;
-                    float limit = expected.StartsWith("scene:") ? SceneHoldSeconds : LoadHoldSeconds;
+                    float limit = server != null ? ServerHoldSeconds : waitingFor.StartsWith("scene:") ? SceneHoldSeconds : LoadHoldSeconds;
                     if (holdStarted < 0) holdStarted = Time.realtimeSinceStartup;
                     if (Time.realtimeSinceStartup - holdStarted < limit)
                     {
                         // 기다리는 동안 도는 프레임이 쓴 난수를 되돌려, 대기가 풀리는 프레임이 기록과 같은 상태에서 시작하게 한다.
                         RandomStates.Restore(_manifest.RandomStates, Frame - 1);
-                        CaptureVerify.Held(expected);
+                        CaptureVerify.Held(waitingFor);
                         CaptureClock.Hold();
                         NetworkTape.Hold();
                         Time.captureDeltaTime = 1e-5f;
                         continue;
                     }
-                    CaptureVerify.Add(Frame, "로딩", $"'{expected}' 이 {limit}초 안에 끝나지 않았다 — 기록 때와 다른 로딩");
-                    nextMarker++;
+                    if (server != null)
+                    {
+                        CaptureVerify.Add(Frame, "서버", $"'{server}' 응답이 {limit}초 안에 오지 않았다 — 올 때 넘긴다");
+                        NetworkTape.GiveUpOverdue();
+                    }
+                    else
+                    {
+                        CaptureVerify.Add(Frame, "로딩", $"'{waitingFor}' 이 {limit}초 안에 끝나지 않았다 — 기록 때와 다른 로딩");
+                        nextMarker++;
+                    }
                 }
                 holdStarted = -1f;
 
@@ -578,6 +598,10 @@ namespace CookApps.LocaleCapture
                     EndReplay();
                     NetworkTape.End(null, completed);
                     LastReport = CaptureVerify.End(Request.Directory, Frame);
+                    double total = _replayClock.Elapsed.TotalSeconds;
+                    Debug.Log($"[LocaleCapture] {_passName} 재생 {Frame}프레임({Frame / (double) Mathf.Max(1, _manifest?.Fps ?? 30):F1}초 분량)에 {total:F1}초 — " +
+                              (Request.Realtime ? "실제 속도" : "빠르게") +
+                              (_startReachedSeconds >= 0 ? $", START 까지 {_startReachedSeconds:F1}초·이후 {total - _startReachedSeconds:F1}초" : ""));
                 }
                 CaptureInput.End();
             }

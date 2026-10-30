@@ -38,6 +38,7 @@ namespace CookApps.LocaleCapture.Editor
             public int SavedAudioMute = -1;   // 게임뷰 Mute Audio(마스터 음소거) — 재생 녹화 동안 풀었다가 되돌린다
             public bool StartSceneOverridden;
             public string SavedStartScene;
+            public bool RetryingRealtime;   // 지금 패스는 빠르게 뽑은 게 녹화와 달라 실제 속도로 다시 뽑는 중
         }
 
         private const string Idle = "Idle", Recording = "Recording", Rendering = "Rendering", Cancelling = "Cancelling";
@@ -178,6 +179,7 @@ namespace CookApps.LocaleCapture.Editor
                 _state.Passes.Add("video:" + _state.Locales[i] + (i < stems.Count ? "|" + stems[i] : ""));
             for (int i = _state.Locales.Count; i < stems.Count; i++) _state.Passes.Add(stems[i]);
             _state.PassIndex = 0;
+            _state.RetryingRealtime = false;
             _state.Reports.Clear();
             _state.PassHashes.Clear();
             _state.Phase = Rendering;
@@ -196,7 +198,9 @@ namespace CookApps.LocaleCapture.Editor
                 bool video = pass.StartsWith("video:");
                 string stem = StemOf(pass);
                 string locale = video ? LocaleOf(pass) : (string.IsNullOrEmpty(manifest.RecordedLocale) ? _state.Locales.FirstOrDefault() : manifest.RecordedLocale);
-                _state.Message = $"{_state.PassIndex + 1}/{_state.Passes.Count} {(video ? locale + " 녹화" + (stem != null ? " + " + stem.ToUpperInvariant() : "") : pass.ToUpperInvariant() + " 스템")} 준비";
+                bool realtime = _state.Settings.RealtimeReplay || _state.RetryingRealtime;
+                _state.Message = $"{_state.PassIndex + 1}/{_state.Passes.Count} {(video ? locale + " 녹화" + (stem != null ? " + " + stem.ToUpperInvariant() : "") : pass.ToUpperInvariant() + " 스템")}" +
+                                 (_state.RetryingRealtime ? " 실제 속도로 다시" : "") + " 준비";
                 LocalState.Restore(Path.Combine(dir, StateFolder), manifest.RecordedLocale, locale, _state.CustomLanguageKey);
                 var request = new SessionRequest
                 {
@@ -204,6 +208,8 @@ namespace CookApps.LocaleCapture.Editor
                     Directory = dir, Locale = locale, Stem = video ? stem : null, Fps = manifest.Fps, Settings = _state.Settings,
                     OverrideSystemLanguage = LocaleCatalog.SystemLanguageOf(locale) != SystemLanguage.Unknown, SystemLanguage = LocaleCatalog.SystemLanguageOf(locale),
                     LiveMarkers = LocaleCatalog.LiveMarkers(_state.Locales.Concat(new[] { manifest.RecordedLocale })),
+                    RecordedLocale = manifest.RecordedLocale, RecordedLocaleForms = LocaleCatalog.MatchForms(manifest.RecordedLocale),
+                    Realtime = realtime,
                 };
                 PlayViewSwitch.ShowGame();   // 언어별 재생은 Game 뷰에서 기록 때 화면 크기로
                 if (manifest.Width > 0 && !GameViewResolution.Matches(manifest.Width, manifest.Height)) GameViewResolution.Set(manifest.Width, manifest.Height);
@@ -290,6 +296,17 @@ namespace CookApps.LocaleCapture.Editor
                 case Rendering:
                     string pass = CurrentPass;
                     CaptureVerify.Report report = CaptureVerify.Load(_state.Directory, pass.StartsWith("video:") ? LocaleOf(pass) : pass);
+                    // 빠르게 뽑은 플레이가 녹화와 달라졌으면 그 패스만 실제 속도로 한 번 더 뽑는다(파일은 덮어쓴다).
+                    string diverged = _state.LastCompleted && !_state.Settings.RealtimeReplay && !_state.RetryingRealtime ? Divergence(report) : null;
+                    if (diverged != null)
+                    {
+                        _state.Reports.Add($"다시 — {report.Pass}: 빠르게 뽑은 플레이가 녹화와 달라({diverged}) 실제 속도로 다시 뽑았다");
+                        Debug.LogWarning($"[LocaleCapture] {report.Pass}: 빠르게 뽑은 플레이가 녹화와 달라 실제 속도로 다시 뽑는다 — {diverged}");
+                        _state.RetryingRealtime = true;
+                        StartPass();
+                        break;
+                    }
+                    _state.RetryingRealtime = false;
                     if (report != null) _state.PassHashes.Add(report.Pass + "=" + report.StateHash);
                     // 화면이 몇 프레임 늦고 빨라도 누른 곳이 모두 같으면 결과는 같다 — 그땐 참고로만.
                     if (report != null && report.UiMismatches.Count > 0)
@@ -371,6 +388,20 @@ namespace CookApps.LocaleCapture.Editor
                 File.Delete(video);
                 File.Move(temp, video);
             }
+        }
+
+        // 재생이 녹화와 다른 길로 갔는지(다시 뽑을 이유). 같으면 null.
+        // 누른 대상이 다르거나, 앞서 끝낸 패스들과 난수 상태 흐름이 다르면 다른 플레이다.
+        private static string Divergence(CaptureVerify.Report report)
+        {
+            if (report == null) return null;
+            if (report.TapMismatches.Count > 0) return $"다른 곳이 눌림 {report.TapMismatches.Count}건";
+            if (_state.PassHashes.Count > 0)
+            {
+                string first = _state.PassHashes[0].Split('=')[1];
+                if (report.StateHash != first) return "앞선 언어와 다른 플레이";
+            }
+            return null;
         }
 
         // 패스(언어별 영상·BGM·SFX)끼리 같은 플레이였는지. 다르면 같은 플레이끼리 묶어 보여 준다.

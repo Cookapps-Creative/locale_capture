@@ -84,6 +84,16 @@ namespace CookApps.LocaleCapture.Editor
             return new[] { code, code.Replace('-', '_'), language == SystemLanguage.Unknown ? null : language.ToString(), languageOnly };
         }
 
+        // 서버 요청 주소에서 이 언어를 알아볼 표기. Forms 에 중국어 문자 체계 표기(zh-Hant·zh-Hans)를 더한다.
+        public static string[] MatchForms(string code)
+        {
+            var forms = Forms(code).Where(f => !string.IsNullOrEmpty(f)).ToList();
+            SystemLanguage language = SystemLanguageOf(code);
+            if (language == SystemLanguage.ChineseTraditional) forms.AddRange(new[] { "zh-Hant", "zh_Hant", "zh-TW", "zh-HK", "ChineseTraditional" });
+            if (language == SystemLanguage.ChineseSimplified) forms.AddRange(new[] { "zh-Hans", "zh_Hans", "zh-CN", "ChineseSimplified" });
+            return forms.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+
         // 언어마다 달라야 하는 서버 요청을 알아보는 표기(짧은 언어 코드는 오탐이 많아 뺀다).
         public static string[] LiveMarkers(IEnumerable<string> codes) =>
             codes.Where(c => !string.IsNullOrEmpty(c)).SelectMany(c => Forms(c).Take(3)).Where(f => !string.IsNullOrEmpty(f)).Distinct().ToArray();

@@ -17,6 +17,9 @@ namespace CookApps.LocaleCapture
         public bool OverrideSystemLanguage;
         public SystemLanguage SystemLanguage;  // 재생 때 프로젝트 코드가 보는 기기 언어
         public string[] LiveMarkers;           // 이 문자열이 든 서버 요청은 테이프 대신 실제 서버로(언어 데이터 등)
+        public string RecordedLocale;          // 재생: 녹화 언어. 언어 표기만 다른 요청을 녹화의 같은 요청으로 맞춘다
+        public string[] RecordedLocaleForms;   // 재생: 녹화 언어의 여러 표기(ko-KR·ko_KR·Korean·ko 등)
+        public bool Realtime;                  // 재생: 실제 1/fps 초 간격으로 묶는다(끄면 기기가 낼 수 있는 만큼 빨리)
         public CaptureSettings Settings;
         public int Fps;
         public int Seed;
