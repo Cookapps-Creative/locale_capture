@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Text;
 using System.Threading;
 using Unity.Collections;
@@ -11,9 +12,10 @@ using Debug = UnityEngine.Debug;
 
 namespace CookApps.LocaleCapture.Editor
 {
-    // 동봉 ffmpeg 로 인코딩한다. 프레임은 큐에 넣고 쓰기 스레드가 ffmpeg 표준 입력으로 흘려 보내,
+    // 동봉 ffmpeg 로 인코딩한다. 프레임은 큐에 넣고 쓰기 스레드가 이름 있는 파이프로 ffmpeg 에 흘려 보내,
     // 메인 스레드(게임)는 인코딩을 기다리지 않는다. GPU 인코더(NVENC·AMF·QSV)가 되면 그걸, 안 되면 x264 를 쓴다.
-    // ffmpeg 표준 입력은 하나라서 소리는 녹화 동안 WAV 로 따로 쓰고, 끝날 때 영상과 합친다(영상은 다시 인코딩하지 않는다).
+    // 표준 입력을 쓰지 않는 건 .NET 의 StandardInput 이 앞에 UTF-8 BOM(3바이트)을 써 넣어 픽셀이 밀리기 때문(영상이 파랗게 나온다).
+    // ffmpeg 입력은 하나라서 소리는 녹화 동안 WAV 로 따로 쓰고, 끝날 때 영상과 합친다(영상은 다시 인코딩하지 않는다).
     public sealed class FfmpegSink : IFrameSink
     {
         private const int QueueDepth = 8;   // 이만큼 쌓이면 메인 스레드가 기다린다(1080x1920 이면 약 64MB)
@@ -22,12 +24,13 @@ namespace CookApps.LocaleCapture.Editor
         {
             public string Locale, Video, Audio, Final;
             public Process Process;
-            public Stream Stdin;
+            public NamedPipeServerStream Pipe;
             public BlockingCollection<NativeArray<byte>> Queue;
             public Thread Writer;
             public readonly StringBuilder Stderr = new StringBuilder();
             public WavSink Wav;
-            public byte[] Scratch;
+            public byte[] Scratch;      // 마지막으로 보낸 프레임(읽기 실패한 프레임은 이걸 한 번 더 보낸다)
+            public bool HasScratch;
             public volatile string Error;
         }
 
@@ -66,39 +69,53 @@ namespace CookApps.LocaleCapture.Editor
 
         private void Start(Target t)
         {
+            string pipeName = "LocaleCapture." + Guid.NewGuid().ToString("N");
+            t.Pipe = new NamedPipeServerStream(pipeName, PipeDirection.Out, 1, PipeTransmissionMode.Byte, PipeOptions.None, 0, 16 << 20);
             // 입력: 8비트 4채널 원시 프레임. GPU 원본(아래→위)이라 뒤집는다. Flip 설정은 반대로.
             string pix = _format.Bgra ? "bgra" : "rgba";
             string flip = _settings.Flip ? "" : "-vf vflip ";
-            string args = $"-hide_banner -loglevel error -y -f rawvideo -pix_fmt {pix} -s {_format.Width}x{_format.Height} -r {_format.FrameRate} -i pipe:0 " +
+            string args = $"-hide_banner -loglevel error -y -f rawvideo -pix_fmt {pix} -s {_format.Width}x{_format.Height} -r {_format.FrameRate} -i \\\\.\\pipe\\{pipeName} " +
                           $"{flip}-an {EncoderArgs(_encoder, _settings)} -pix_fmt yuv420p \"{t.Video}\"";
             t.Process = Process.Start(new ProcessStartInfo(BundledFfmpeg.Path, args)
             {
-                UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
             });
             t.Process.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (t.Stderr) t.Stderr.AppendLine(e.Data); };
             t.Process.BeginErrorReadLine();
-            t.Stdin = t.Process.StandardInput.BaseStream;
             t.Writer = new Thread(() => WriteLoop(t)) { IsBackground = true, Name = "LocaleCapture.Ffmpeg." + t.Locale };
             t.Writer.Start();
         }
 
         private unsafe void WriteLoop(Target t)
         {
+            try
+            {
+                // ffmpeg 가 입력을 열 때 연결된다. 그 전에 죽으면 기다리지 않는다.
+                IAsyncResult connect = t.Pipe.BeginWaitForConnection(null, null);
+                while (!connect.AsyncWaitHandle.WaitOne(200))
+                    if (t.Process.HasExited) throw new IOException("ffmpeg 가 입력을 열기 전에 끝났다");
+                t.Pipe.EndWaitForConnection(connect);
+            }
+            catch (Exception e) { t.Error ??= e.Message; }
+
             foreach (NativeArray<byte> frame in t.Queue.GetConsumingEnumerable())
             {
                 try
                 {
-                    if (t.Error == null)
+                    if (t.Error != null) continue;
+                    if (frame.IsCreated)
                     {
                         int length = frame.Length;
                         if (t.Scratch == null || t.Scratch.Length < length) t.Scratch = new byte[length];
                         fixed (byte* dst = t.Scratch)
                             UnsafeUtility.MemCpy(dst, NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(frame), length);
-                        t.Stdin.Write(t.Scratch, 0, length);
+                        t.HasScratch = true;
+                        t.Pipe.Write(t.Scratch, 0, length);
                     }
+                    else if (t.HasScratch) t.Pipe.Write(t.Scratch, 0, _format.Width * _format.Height * 4);   // 같은 프레임 한 번 더
                 }
                 catch (Exception e) { t.Error ??= e.Message; }   // 파이프가 끊겼다(ffmpeg 가 죽음) — 나머지 프레임은 버린다
-                finally { _pool.Return(frame); }
+                finally { if (frame.IsCreated) _pool.Return(frame); }
             }
         }
 
@@ -112,6 +129,14 @@ namespace CookApps.LocaleCapture.Editor
             t.Queue.Add(rgba);   // 큐가 가득 차면 여기서 기다린다 — 인코더가 못 따라오는 만큼만 게임이 느려진다
         }
 
+        // GPU 읽기에 실패한 프레임 자리에 직전 프레임을 한 번 더 넣는다 — 프레임 수가 맞아야 소리와 어긋나지 않는다.
+        public void RepeatVideoFrame(int localeIndex)
+        {
+            Target t = _targets[localeIndex];
+            if (t.Error != null || t.Queue.IsAddingCompleted) return;
+            t.Queue.Add(default);
+        }
+
         public void AddAudio(NativeArray<float> interleaved)
         {
             foreach (Target t in _targets) t.Wav?.AddAudio(interleaved);
@@ -123,7 +148,7 @@ namespace CookApps.LocaleCapture.Editor
             {
                 t.Queue.CompleteAdding();
                 t.Writer.Join();
-                try { t.Stdin.Close(); } catch { /* 이미 끊김 */ }
+                try { t.Pipe.Dispose(); } catch { /* 이미 끊김 */ }   // 입력 끝 — ffmpeg 가 파일을 마무리한다
                 if (!t.Process.WaitForExit(120000)) { try { t.Process.Kill(); } catch { /* 이미 끝남 */ } t.Error ??= "인코더가 끝나지 않아 멈췄다"; }
                 t.Process.WaitForExit();   // stderr 를 다 읽는다
                 if (t.Process.ExitCode != 0) t.Error ??= $"ffmpeg 종료 코드 {t.Process.ExitCode}";

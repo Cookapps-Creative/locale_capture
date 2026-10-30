@@ -72,6 +72,13 @@ namespace CookApps.LocaleCapture.Editor
             Try("에디터 씬 로드 시작", () => _harmony.Patch(AccessTools.Method(typeof(UnityEditor.SceneManagement.EditorSceneManager), "LoadSceneInPlayModeInternal")
                     ?? throw new MissingMethodException("EditorSceneManager.LoadSceneInPlayModeInternal"),
                 postfix: new HarmonyMethod(typeof(CapturePatches), nameof(SceneLoadPostfix))));
+            // Addressables 2.x 는 진단 콜백 API 가 없다(AddressablesProbe 가 아무것도 못 건다). 완료 콜백을 모아서 부르는 자리에서 개수를 센다 —
+            // 언어 테이블·에셋 로딩이 끝나는 프레임을 동기 지점("addr")으로 남겨, 재생에서 로딩이 느려도 게임 시간을 멈추고 기다린다.
+            Type resourceManager = AccessTools.TypeByName("UnityEngine.ResourceManagement.ResourceManager");
+            if (resourceManager != null)
+                Try("Addressables 완료", () => _harmony.Patch(AccessTools.Method(resourceManager, "ExecuteDeferredCallbacks")
+                        ?? throw new MissingMethodException("ResourceManager.ExecuteDeferredCallbacks"),
+                    prefix: new HarmonyMethod(typeof(CapturePatches), nameof(DeferredCallbacksPrefix))));
             PropertyInfo activation = typeof(AsyncOperation).GetProperty(nameof(AsyncOperation.allowSceneActivation));
             Try("씬 활성화 지연", () =>
             {
@@ -345,6 +352,17 @@ namespace CookApps.LocaleCapture.Editor
         private static void WebPostfix(UnityWebRequest __instance, UnityWebRequestAsyncOperation __result) => NetworkTape.AfterWebRequest(__instance, __result);
 
         private static void SceneLoadPostfix(AsyncOperation __result) => CaptureMarkers.SceneLoadStarted(__result);
+
+        private static FieldInfo _deferredCallbacks;
+
+        // ResourceManager 가 이번 프레임에 완료 콜백을 부를 Addressables 작업 수만큼 동기 지점을 남긴다.
+        private static void DeferredCallbacksPrefix(object __instance)
+        {
+            if (!CaptureClock.Active || __instance == null) return;
+            _deferredCallbacks ??= __instance.GetType().GetField("m_DeferredCompleteCallbacks", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (!(_deferredCallbacks?.GetValue(__instance) is System.Collections.ICollection list)) return;
+            for (int i = 0; i < list.Count; i++) CaptureMarkers.Hit("addr");
+        }
 
         private static bool ActivationSetPrefix(AsyncOperation __instance, bool value) => !CaptureMarkers.InterceptSet(__instance, value);
 

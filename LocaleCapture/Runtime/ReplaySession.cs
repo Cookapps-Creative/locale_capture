@@ -92,6 +92,7 @@ namespace CookApps.LocaleCapture
         private int _channels;
         private bool _audioStarted;
         private readonly List<(AsyncGPUReadbackRequest request, NativeArray<byte> buffer)> _pending = new List<(AsyncGPUReadbackRequest, NativeArray<byte>)>();
+        private int _readbackErrors;
 
         // 동기 지점
         private readonly List<string> _drain = new List<string>();
@@ -462,7 +463,14 @@ namespace CookApps.LocaleCapture
                     request.WaitForCompletion();
                 }
                 _pending.RemoveAt(0);
-                if (request.hasError) { Debug.LogWarning("[LocaleCapture] 프레임 읽기 실패, 건너뜀"); _sink.Return(buffer); continue; }
+                if (request.hasError)
+                {
+                    // 렌더 스케일·창 크기가 바뀐 직후 등에 GPU 읽기가 실패할 수 있다. 직전 프레임을 한 번 더 넣어 프레임 수를 맞춘다.
+                    if (++_readbackErrors <= 3) Debug.LogWarning("[LocaleCapture] 프레임 읽기 실패 — 직전 프레임으로 대신한다");
+                    _sink.Return(buffer);
+                    _sink.RepeatVideoFrame(0);
+                    continue;
+                }
                 _sink.AddVideoFrame(0, buffer);
             }
         }

@@ -77,6 +77,8 @@ namespace CookApps.LocaleCapture.Editor
             _encoders[localeIndex].AddFrame(_format.Width, _format.Height, _format.Width * 4, fmt, data);
         }
 
+        public void RepeatVideoFrame(int localeIndex) { }   // 직전 프레임을 들고 있지 않다 — 예전처럼 건너뛴다
+
         public void AddAudio(NativeArray<float> interleaved)
         {
             foreach (MediaEncoder e in _encoders) e.AddSamples(interleaved);

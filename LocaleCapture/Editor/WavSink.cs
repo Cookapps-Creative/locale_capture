@@ -32,6 +32,7 @@ namespace CookApps.LocaleCapture.Editor
         public NativeArray<byte> Rent(int length) => _pool.Rent(length);
         public void Return(NativeArray<byte> buffer) => _pool.Return(buffer);
         public void AddVideoFrame(int localeIndex, NativeArray<byte> rgba) => _pool.Return(rgba);
+        public void RepeatVideoFrame(int localeIndex) { }
 
         public void AddAudio(NativeArray<float> interleaved)
         {

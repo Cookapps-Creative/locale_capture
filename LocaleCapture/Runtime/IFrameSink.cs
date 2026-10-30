@@ -31,6 +31,9 @@ namespace CookApps.LocaleCapture
         // 8비트 4채널(순서는 FrameFormat.Bgra), 행 순서는 GPU 원본. Rent 로 빌려준 배열이며 싱크가 다 쓰면 풀로 되돌린다.
         void AddVideoFrame(int localeIndex, NativeArray<byte> rgba);
 
+        // 프레임을 못 읽었을 때 직전 프레임을 한 번 더 넣는다(프레임 수를 맞춰 소리와 어긋나지 않게). 못 하는 싱크는 아무것도 안 한다.
+        void RepeatVideoFrame(int localeIndex);
+
         // 인터리브 float 샘플. 모든 로케일 영상에 같은 오디오가 들어간다.
         void AddAudio(NativeArray<float> interleaved);
 
