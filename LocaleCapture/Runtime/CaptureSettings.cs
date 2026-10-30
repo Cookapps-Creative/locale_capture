@@ -23,7 +23,7 @@ namespace CookApps.LocaleCapture
         // 언어별 재생을 실제 속도(1/fps 초)로만 돌린다. 끄면(기본) 빠르게 돌리고, 녹화와 다르게 흘러간 언어만 실제 속도로 다시 뽑는다.
         // 영상·소리는 프레임마다 만들어져 빠르게 돌려도 결과물 속도는 같다.
         public bool RealtimeReplay;
-        // ffmpeg 에 GPU 인코더(NVENC/AMF/QSV)가 있으면 쓴다. MP4·MOV 만.
+        // 쓰지 않는다(예전 설정 호환용). GPU 인코더(NVENC/AMF/QSV)는 녹화 때 되는 것을 자동으로 고른다.
         public bool HardwareEncoder;
         // 출력 경로 앞부분. 싱크가 "_<로케일>.<확장자>" 를 붙인다.
         public string OutputBase;

@@ -250,7 +250,8 @@ namespace CookApps.LocaleCapture.Editor
 
         private static void SetFactories()
         {
-            CaptureBoot.VideoSinkFactory = r => new MediaEncoderSink(r.Settings);
+            // 동봉 ffmpeg 가 있으면 별도 프로세스에서 인코딩한다(게임이 인코딩을 기다리지 않는다). 없으면 Unity 내장 인코더.
+            CaptureBoot.VideoSinkFactory = r => BundledFfmpeg.Available ? new FfmpegSink(r.Settings) : (IFrameSink) new MediaEncoderSink(r.Settings);
             CaptureBoot.WavSinkFactory = path => new WavSink(path);
         }
 

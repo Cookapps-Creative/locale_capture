@@ -34,7 +34,7 @@ namespace CookApps.LocaleCapture.Editor
             if (typeof(UnityEditor.SceneManagement.EditorSceneManager).GetMethod("LoadSceneInPlayModeInternal", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public) == null)
                 issues.Add("Unity 에디터 씬 로드 API 가 바뀌었다 — Addressables 에셋 데이터베이스 모드에서 씬 로딩을 기다리지 못한다");
 
-            if (!BundledFfmpeg.Available) issues.Add("편집·내보내기 도구(Tools/ffmpeg.exe)가 없다");
+            if (!BundledFfmpeg.Available) issues.Add("인코딩·편집 도구(Tools/ffmpeg.exe)가 없다 — 녹화는 Unity 내장 인코더로 느리게 되고, 편집·내보내기는 안 된다");
 
             if (CapturePatches.CoreProblems.Count > 0)
                 issues.Add($"지난 녹화의 핵심 런타임 패치 실패: {string.Join(", ", CapturePatches.CoreProblems)}(콘솔)");

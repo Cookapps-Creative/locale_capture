@@ -62,7 +62,7 @@
 - **Target** 목표 길이, 실행 취소 Ctrl+Z·Ctrl+Y
 - **Thumbnail**: 플레이헤드 장면을 언어별·비율별 PNG
 - **Export**: 비율 토글(9:16·1:1·16:9·4:5)마다 언어별 파일. 포맷·품질·해상도는 Locale Capture 창 설정을 따른다
-- 편집·내보내기는 동봉 ffmpeg(`Tools/ffmpeg.exe`, GPL 빌드 — `FFMPEG-LICENSE.txt`)
+- 녹화 인코딩과 편집·내보내기는 동봉 ffmpeg(`Tools/ffmpeg.exe`, GPL 빌드 — `FFMPEG-LICENSE.txt`). 녹화는 ffmpeg 를 별도 프로세스로 띄워 프레임을 흘려 보내므로 게임이 인코딩을 기다리지 않고, GPU 인코더(NVENC·AMF·QSV)가 되면 자동으로 쓴다(콘솔에 `GPU 인코더 … 사용`). ffmpeg 가 없으면 Unity 내장 인코더로 떨어진다
 
 ## 전제와 한계
 
