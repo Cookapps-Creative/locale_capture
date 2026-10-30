@@ -20,6 +20,10 @@ namespace CookApps.LocaleCapture.Editor
             public float Rate;         // 원본 구간 배속
             public string File;        // 클립
             public bool MuteBgm, MuteSfx;
+            public List<EditList.Mute> Mutes;   // 클립 안 음소거(클립 안 시각)
+            public string InsertId;    // 클립의 삽입 Id(페이드 끝점 찾기용)
+            public float At;           // 클립이 실제로 놓인 원본 시각
+            public float ClipStart, ClipEnd;   // 클립에서 쓰는 조각(클립 안 삭제 구간을 뺀 것)
         }
 
         private static readonly CultureInfo Ci = CultureInfo.InvariantCulture;
@@ -90,7 +94,32 @@ namespace CookApps.LocaleCapture.Editor
                 if (!info.HasVideo) return "클립을 읽지 못했다: " + it.File;
                 clipInfo[it.File] = info;
             }
-            float[] lengths = items.Select(it => it.IsClip ? clipInfo[it.File].Duration : (it.End - it.Start) / it.Rate).ToArray();
+            // 클립은 클립 안 삭제 구간을 뺀 조각들로, 다시 클립 안 배속 경계에서 나눈다(전부 지웠으면 빠진다).
+            var pieces = new List<Item>();
+            foreach (Item it in items)
+            {
+                if (!it.IsClip) { pieces.Add(it); continue; }
+                float clipLength = clipInfo[it.File].Duration;
+                EditList.Insert ins = edits.InsertById(it.InsertId);
+                List<(float start, float end)> keep = ins != null ? ins.Keep(clipLength) : new List<(float, float)> { (0, clipLength) };
+                foreach ((float ks, float ke) in keep)
+                {
+                    if (ke - ks < 0.001f) continue;
+                    List<(float start, float end, float rate)> parts = ins != null ? ins.SpeedPieces(ks, ke) : new List<(float, float, float)> { (ks, ke, 1f) };
+                    foreach ((float ps, float pe, float pr) in parts)
+                    {
+                        if (pe - ps < 0.001f) continue;
+                        Item p = it;
+                        p.ClipStart = ps;
+                        p.ClipEnd = pe;
+                        p.Rate = pr > 0 ? pr : 1f;
+                        pieces.Add(p);
+                    }
+                }
+            }
+            items = pieces;
+            if (items.Count == 0) return "남는 구간이 없다";
+            float[] lengths = items.Select(it => it.IsClip ? (it.ClipEnd - it.ClipStart) / it.Rate : (it.End - it.Start) / it.Rate).ToArray();
             float total = lengths.Sum();
 
             // 원본 소리: 스템이 있으면 스템을 섞고(BGM 교체면 BGM 스템은 뺀다), 없으면 영상의 소리. 음소거는 여기서 먼저 적용한다.
@@ -124,7 +153,7 @@ namespace CookApps.LocaleCapture.Editor
             int sourceCount = items.Count(i => !i.IsClip);
             if (sourceCount > 0)
             {
-                f.Append($"{FadeChain(edits, src, fps, f)}split={sourceCount}");
+                f.Append($"[0:v]split={sourceCount}");
                 for (int i = 0; i < sourceCount; i++) f.Append($"[sv{i}]");
                 f.Append(';');
                 if (sourceAudio != null)
@@ -161,17 +190,22 @@ namespace CookApps.LocaleCapture.Editor
                     int idx = inputs.Count;
                     inputs.Add($"-i \"{it.File}\"");
                     BundledFfmpeg.MediaInfo ci = clipInfo[it.File];
-                    f.Append($"[{idx}:v]setpts=PTS-STARTPTS[t{k}];");
+                    // 클립 안 삭제를 뺀 조각만, 조각의 배속으로. 소리도 같은 구간을 잘라 같은 배속으로(스템은 클립과 같은 시간축).
+                    string clipTrim = $"atrim=start={F(it.ClipStart)}:end={F(it.ClipEnd)},asetpts=PTS-STARTPTS{Atempo(it.Rate)},";
+                    f.Append($"[{idx}:v]trim=start={F(it.ClipStart)}:end={F(it.ClipEnd)},setpts=(PTS-STARTPTS)/{F(it.Rate)}[t{k}];");
                     f.Append(FrameFilter($"[t{k}]", ci.Width, ci.Height, outW, outH, framing.Crop, framing.Focus, $"[f{k}]", k.ToString()) + ";");
                     f.Append($"[f{k}]fps={fps},format=yuv420p[v{k}];");
                     string dur = F(len);
                     bool muteBgm = it.MuteBgm;
-                    if ((muteBgm || it.MuteSfx) && EditList.ClipStems(it.File, out string cb, out string cs))
+                    // 클립 안 음소거는 자르기 전에(클립 안 시각 그대로) 건다. BGM/SFX 만 끄는 구간은 스템이 있어야 따로 된다.
+                    bool partMute = it.Mutes != null && it.Mutes.Any(m => m.Target != MuteTarget.All);
+                    const string Fmt48 = "aformat=sample_rates=48000:channel_layouts=stereo";
+                    if ((muteBgm || it.MuteSfx || partMute) && EditList.ClipStems(it.File, out string cb, out string cs))
                     {
                         // Locale Capture 녹화: 클립 소리 대신 스템을 쓰고, 끈 쪽은 뺀다.
                         var pads = new List<string>();
-                        if (cb != null && !muteBgm) { inputs.Add($"-i \"{cb}\""); f.Append($"[{inputs.Count - 1}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=end={dur},asetpts=PTS-STARTPTS[cb{k}];"); pads.Add($"[cb{k}]"); }
-                        if (cs != null && !it.MuteSfx) { inputs.Add($"-i \"{cs}\""); f.Append($"[{inputs.Count - 1}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=end={dur},asetpts=PTS-STARTPTS[cs{k}];"); pads.Add($"[cs{k}]"); }
+                        if (cb != null && !muteBgm) { inputs.Add($"-i \"{cb}\""); f.Append($"[{inputs.Count - 1}:a]{Fmt48}{MuteFilter(it.Mutes, MuteTarget.Bgm)},{clipTrim}apad,atrim=end={dur},asetpts=PTS-STARTPTS[cb{k}];"); pads.Add($"[cb{k}]"); }
+                        if (cs != null && !it.MuteSfx) { inputs.Add($"-i \"{cs}\""); f.Append($"[{inputs.Count - 1}:a]{Fmt48}{MuteFilter(it.Mutes, MuteTarget.Sfx)},{clipTrim}apad,atrim=end={dur},asetpts=PTS-STARTPTS[cs{k}];"); pads.Add($"[cs{k}]"); }
                         if (pads.Count == 0)
                         {
                             inputs.Add($"-f lavfi -t {dur} -i anullsrc=r=48000:cl=stereo");
@@ -181,7 +215,7 @@ namespace CookApps.LocaleCapture.Editor
                         else f.Append($"{pads[0]}{pads[1]}amix=inputs=2:duration=longest:normalize=0[a{k}];");
                     }
                     else if (clipInfo[it.File].HasAudio)
-                        f.Append($"[{idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,apad,atrim=end={dur},asetpts=PTS-STARTPTS[a{k}];");
+                        f.Append($"[{idx}:a]{Fmt48}{MuteFilter(it.Mutes, MuteTarget.All, true)},{clipTrim}apad,atrim=end={dur},asetpts=PTS-STARTPTS[a{k}];");
                     else
                     {
                         inputs.Add($"-f lavfi -t {dur} -i anullsrc=r=48000:cl=stereo");
@@ -190,7 +224,8 @@ namespace CookApps.LocaleCapture.Editor
                 }
                 concatPads.Append($"[v{k}][a{k}]");
             }
-            f.Append($"{concatPads}concat=n={items.Count}:v=1:a=1[v][a]");
+            f.Append($"{concatPads}concat=n={items.Count}:v=1:a=1[vc][a];");
+            f.Append($"{OutputFadeChain(edits, items, lengths, total, outW, outH, fps, "[vc]", f)}null[v]");
 
             string args = $"-y -loglevel error -stats {string.Join(" ", inputs)} -filter_complex \"{f}\" -map \"[v]\" -map \"[a]\" " +
                           $"-r {fps} {EncoderArgs(encode)} \"{outputFile}\"";
@@ -232,7 +267,7 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         // atempo 는 한 번에 0.5 배까지만 느려진다. 더 느리면 여러 번 건다.
-        private static string Atempo(float rate)
+        internal static string Atempo(float rate)
         {
             if (Math.Abs(rate - 1f) < 0.001f) return "";
             var sb = new StringBuilder();
@@ -243,34 +278,13 @@ namespace CookApps.LocaleCapture.Editor
             return sb.ToString();
         }
 
-        // 구간 페이드: 원본 시각에 검은 판을 겹친다. 앞 절반은 검은 판이 걷히고(밝아짐), 뒤 절반은 덮인다(어두워짐).
-        // 원본 영상 패드를 돌려준다.
-        private static string FadeChain(EditList edits, BundledFfmpeg.MediaInfo src, int fps, StringBuilder f)
-        {
-            string pad = "[0:v]";
-            int n = 0;
-            void Layer(string fade, float from, float to)
-            {
-                f.Append($"color=black:s={src.Width}x{src.Height}:r={fps}:d={F(src.Duration)},format=yuva420p,{fade}[fk{n}];");
-                f.Append($"{pad}[fk{n}]overlay=eof_action=pass:enable='between(t,{F(from)},{F(to)})'[fv{n}];");
-                pad = $"[fv{n}]";
-                n++;
-            }
-            foreach (EditList.Range fd in edits.Fades)
-            {
-                float a = Math.Max(0, Math.Min(fd.Start, fd.End)), b = Math.Min(src.Duration, Math.Max(fd.Start, fd.End));
-                float len = (b - a) / 2;
-                if (len < 0.02f) continue;
-                Layer($"fade=t=out:st={F(a)}:d={F(len)}:alpha=1", a, a + len);
-                Layer($"fade=t=in:st={F(b - len)}:d={F(len)}:alpha=1", b - len, b);
-            }
-            return pad;
-        }
-
         // 해당 스템에 적용할 음소거 구간. All 은 모든 스템에, 스템이 없을 때(allOnly)는 모든 구간을 영상 소리에.
-        private static string MuteFilter(EditList edits, MuteTarget target, bool allOnly = false)
+        private static string MuteFilter(EditList edits, MuteTarget target, bool allOnly = false) => MuteFilter(edits.Mutes, target, allOnly);
+
+        private static string MuteFilter(IEnumerable<EditList.Mute> list, MuteTarget target, bool allOnly = false)
         {
-            IEnumerable<EditList.Mute> mutes = edits.Mutes.Where(m => allOnly || m.Target == MuteTarget.All || m.Target == target);
+            if (list == null) return "";
+            IEnumerable<EditList.Mute> mutes = list.Where(m => allOnly || m.Target == MuteTarget.All || m.Target == target);
             string enable = string.Join("+", mutes.Select(m => $"between(t,{F(Math.Min(m.Start, m.End))},{F(Math.Max(m.Start, m.End))})"));
             return enable.Length == 0 ? "" : $",volume=0:enable='{enable}'";
         }
@@ -299,15 +313,80 @@ namespace CookApps.LocaleCapture.Editor
                 {
                     float at = Math.Max(s, inserts[next].At);
                     if (at > s) AddSource(items, edits, s, at);
-                    items.Add(new Item { IsClip = true, File = inserts[next].FileFor(locale), MuteBgm = inserts[next].MuteBgm, MuteSfx = inserts[next].MuteSfx });
+                    items.Add(ClipItem(inserts[next], locale, at));
                     s = at;
                     next++;
                 }
                 if (end > s) AddSource(items, edits, s, end);
             }
-            for (; next < inserts.Count; next++) items.Add(new Item { IsClip = true, File = inserts[next].FileFor(locale), MuteBgm = inserts[next].MuteBgm, MuteSfx = inserts[next].MuteSfx });
+            for (; next < inserts.Count; next++) items.Add(ClipItem(inserts[next], locale, duration));
 
             return items;
+        }
+
+        private static Item ClipItem(EditList.Insert ins, string locale, float at)
+            => new Item { IsClip = true, File = ins.FileFor(locale), MuteBgm = ins.MuteBgm, MuteSfx = ins.MuteSfx, Mutes = ins.Mutes, InsertId = ins.Id, At = at };
+
+        // 페이드 끝점의 결과 영상 시각. 클립 안이면 그 클립의 조각들 중 해당 지점(지운 구간 안이면 다음 조각 시작),
+        // 아니면 원본 조각은 지난 만큼(배속 반영), 클립은 그 자리 앞(start 면 같은 자리 포함)에 놓인 것만 더한다.
+        private static float OutputTime(List<Item> items, float[] lengths, float source, string clip, float clipTime, bool start)
+        {
+            float acc = 0;
+            if (!string.IsNullOrEmpty(clip))
+            {
+                bool seen = false;
+                for (int k = 0; k < items.Count; k++)
+                {
+                    Item it = items[k];
+                    if (it.IsClip && it.InsertId == clip)
+                    {
+                        seen = true;
+                        if (clipTime < it.ClipStart) return acc;
+                        if (clipTime <= it.ClipEnd) return acc + (clipTime - it.ClipStart) / it.Rate;
+                    }
+                    else if (seen) return acc;   // 클립 마지막 조각 뒤(끝부분을 지운 곳)
+                    acc += lengths[k];
+                }
+                if (seen) return acc;
+                // 클립을 전부 지웠으면 원본 시각(삽입 지점)으로
+            }
+            acc = 0;
+            for (int k = 0; k < items.Count; k++)
+            {
+                Item it = items[k];
+                if (it.IsClip) { if (start ? it.At <= source : it.At < source) acc += lengths[k]; }
+                else acc += Math.Max(0, Math.Min(source - it.Start, it.End - it.Start)) / it.Rate;
+            }
+            return acc;
+        }
+
+        // 구간 페이드: 이어 붙인 결과 영상 위에 검은 판을 겹친다. 끝점을 결과 영상 시각으로 옮기므로, 구간 안의 삭제 부분은 빠지고
+        // 배속·삽입 클립이 반영된 남은 길이에서 앞 절반은 덮이고(어두워짐) 뒤 절반은 걷힌다(밝아짐).
+        // 검은 판의 alpha 를 fade=t=in 으로 0→1, fade=t=out 으로 1→0. 마지막 패드를 돌려준다.
+        private static string OutputFadeChain(EditList edits, List<Item> items, float[] lengths, float total, int w, int h, int fps, string pad, StringBuilder f)
+        {
+            int n = 0;
+            void Layer(string fade, float from, float to)
+            {
+                f.Append($"color=black:s={w}x{h}:r={fps}:d={F(total)},format=yuva420p,{fade}[ok{n}];");
+                f.Append($"{pad}[ok{n}]overlay=eof_action=pass:enable='between(t,{F(from)},{F(to)})'[ov{n}];");
+                pad = $"[ov{n}]";
+                n++;
+            }
+            foreach (EditList.Fade fd in edits.Fades)
+            {
+                // 원본만 쓰는 옛 페이드는 Start > End 일 수 있다
+                float s0 = fd.TouchesClip ? fd.Start : Math.Min(fd.Start, fd.End), s1 = fd.TouchesClip ? fd.End : Math.Max(fd.Start, fd.End);
+                float a = OutputTime(items, lengths, s0, fd.StartClip, fd.StartClipTime, true);
+                float b = OutputTime(items, lengths, s1, fd.EndClip, fd.EndClipTime, false);
+                if (b < a) (a, b) = (b, a);
+                a = Math.Max(0, a); b = Math.Min(total, b);
+                float len = (b - a) / 2;
+                if (len < 0.02f) continue;
+                Layer($"fade=t=in:st={F(a)}:d={F(len)}:alpha=1", a, a + len);
+                Layer($"fade=t=out:st={F(b - len)}:d={F(len)}:alpha=1", b - len, b);
+            }
+            return pad;
         }
 
         // 원본 구간을 배속 경계에서 나눠 넣는다.

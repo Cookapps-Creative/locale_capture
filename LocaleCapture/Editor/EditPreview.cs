@@ -162,32 +162,51 @@ namespace CookApps.LocaleCapture.Editor
             return err.Length == 0 && File.Exists(output) ? output : null;
         }
 
-        // 삽입 클립 소리. Locale Capture 녹화를 음소거했으면 남긴 스템만, 아니면 클립 소리. 소리가 없으면 null.
-        public static string BuildClipAudio(string clip, bool muteBgm, bool muteSfx)
+        // 삽입 클립 소리. Locale Capture 녹화를 음소거했으면 남긴 스템만, 아니면 클립 소리. 클립 안 음소거 구간은
+        // 소리를 0 으로(BGM/SFX 만 끄는 구간은 스템이 있을 때만 따로, 없으면 전체). 소리가 없으면 null.
+        public static string BuildClipAudio(string clip, bool muteBgm, bool muteSfx, IList<EditList.Mute> mutes = null)
         {
             if (!BundledFfmpeg.Available || !File.Exists(clip)) return null;
-            string output = Path.Combine(CacheRoot, Key(clip, $"clip|{muteBgm}|{muteSfx}") + ".wav");
+            mutes ??= new List<EditList.Mute>();
+            var ci = CultureInfo.InvariantCulture;
+            string muteKey = string.Join(";", mutes.Select(m => $"{m.Start.ToString(ci)},{m.End.ToString(ci)},{(int) m.Target}"));
+            string output = Path.Combine(CacheRoot, Key(clip, $"clip|{muteBgm}|{muteSfx}|{muteKey}") + ".wav");
             if (File.Exists(output)) return output;
             BundledFfmpeg.MediaInfo info = BundledFfmpeg.Probe(clip);
-            string dur = info.Duration.ToString(CultureInfo.InvariantCulture);
+            string dur = info.Duration.ToString(ci);
+            const string Fmt48 = "aformat=sample_rates=48000:channel_layouts=stereo";
+            bool partMute = mutes.Any(m => m.Target != MuteTarget.All);
             string args;
-            if ((muteBgm || muteSfx) && EditList.ClipStems(clip, out string bgm, out string sfx))
+            if ((muteBgm || muteSfx || partMute) && EditList.ClipStems(clip, out string bgm, out string sfx))
             {
-                var keep = new List<string>();
-                if (bgm != null && !muteBgm) keep.Add(bgm);
-                if (sfx != null && !muteSfx) keep.Add(sfx);
-                if (keep.Count == 0) return null;
-                args = keep.Count == 1
-                    ? $"-y -loglevel error -i \"{keep[0]}\" -t {dur} -ac 2 -ar 48000 -c:a pcm_s16le \"{output}\""
-                    : $"-y -loglevel error -i \"{keep[0]}\" -i \"{keep[1]}\" -filter_complex \"[0:a][1:a]amix=inputs=2:duration=longest:normalize=0[out]\" -map \"[out]\" -t {dur} -ac 2 -ar 48000 -c:a pcm_s16le \"{output}\"";
+                var inputs = new List<string>();
+                var f = new StringBuilder();
+                if (bgm != null && !muteBgm) { inputs.Add($"-i \"{bgm}\""); f.Append($"[{inputs.Count - 1}:a]{Fmt48}{Mute(mutes, MuteTarget.Bgm, false)}[k{inputs.Count - 1}];"); }
+                if (sfx != null && !muteSfx) { inputs.Add($"-i \"{sfx}\""); f.Append($"[{inputs.Count - 1}:a]{Fmt48}{Mute(mutes, MuteTarget.Sfx, false)}[k{inputs.Count - 1}];"); }
+                if (inputs.Count == 0) return null;
+                f.Append(inputs.Count == 1 ? "[k0]anull[out]" : "[k0][k1]amix=inputs=2:duration=longest:normalize=0[out]");
+                args = $"-y -loglevel error {string.Join(" ", inputs)} -filter_complex \"{f}\" -map \"[out]\" -t {dur} -ac 2 -ar 48000 -c:a pcm_s16le \"{output}\"";
             }
             else
             {
                 if (!info.HasAudio) return null;
-                args = $"-y -loglevel error -i \"{clip}\" -vn -ac 2 -ar 48000 -c:a pcm_s16le \"{output}\"";
+                args = $"-y -loglevel error -i \"{clip}\" -vn -af \"{Fmt48}{Mute(mutes, MuteTarget.All, true)}\" -ac 2 -ar 48000 -c:a pcm_s16le \"{output}\"";
             }
             Directory.CreateDirectory(CacheRoot);
             string err = BundledFfmpeg.Run(args);
+            return err.Length == 0 && File.Exists(output) ? output : null;
+        }
+
+        // 배속 구간 소리: 원본 소리 WAV 의 [start, end] 를 잘라 rate 배로(음높이 유지). 미리듣기는 WAV 를 원래 속도로만
+        // 틀 수 있어서 구간마다 따로 만든다. 같은 구간·배속이면 캐시를 쓴다.
+        public static string BuildSpeedAudio(string sourceWav, float start, float end, float rate)
+        {
+            if (!BundledFfmpeg.Available || string.IsNullOrEmpty(sourceWav) || !File.Exists(sourceWav) || end - start < 0.01f || rate <= 0) return null;
+            var ci = CultureInfo.InvariantCulture;
+            string output = Path.Combine(CacheRoot, Key(sourceWav, $"speed|{start.ToString(ci)}|{end.ToString(ci)}|{rate.ToString(ci)}") + ".wav");
+            if (File.Exists(output)) return output;
+            Directory.CreateDirectory(CacheRoot);
+            string err = BundledFfmpeg.Run($"-y -loglevel error -i \"{sourceWav}\" -af \"atrim=start={start.ToString(ci)}:end={end.ToString(ci)},asetpts=PTS-STARTPTS{VideoEditExporter.Atempo(rate)}\" -c:a pcm_s16le \"{output}\"");
             return err.Length == 0 && File.Exists(output) ? output : null;
         }
 
