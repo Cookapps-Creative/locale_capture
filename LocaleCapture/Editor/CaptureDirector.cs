@@ -173,12 +173,21 @@ namespace CookApps.LocaleCapture.Editor
             // 스템은 앞 언어 패스들이 함께 뽑는다("video:ko-KR|sfx") — 스템만 뽑는 패스를 따로 돌지 않게.
             // 언어가 스템보다 적을 때만 남은 스템을 따로 돈다.
             _state.Passes.Clear();
-            var stems = new List<string>();
-            if (_state.Settings.Bgm) stems.Add("bgm");
-            if (_state.Settings.Sfx) stems.Add("sfx");
-            for (int i = 0; i < _state.Locales.Count; i++)
-                _state.Passes.Add("video:" + _state.Locales[i] + (i < stems.Count ? "|" + stems[i] : ""));
-            for (int i = _state.Locales.Count; i < stems.Count; i++) _state.Passes.Add(stems[i]);
+            if (_state.Settings.PerLocaleSfx && _state.Settings.Sfx)
+            {
+                // 언어별 SFX(음성): 모든 언어 패스가 자기 SFX 스템을 뽑고(BGM 음소거), BGM 은 영상 없는 가벼운 패스로 하나 뽑는다.
+                foreach (string locale in _state.Locales) _state.Passes.Add("video:" + locale + "|sfx");
+                if (_state.Settings.Bgm) _state.Passes.Add("bgm");
+            }
+            else
+            {
+                var stems = new List<string>();
+                if (_state.Settings.Bgm) stems.Add("bgm");
+                if (_state.Settings.Sfx) stems.Add("sfx");
+                for (int i = 0; i < _state.Locales.Count; i++)
+                    _state.Passes.Add("video:" + _state.Locales[i] + (i < stems.Count ? "|" + stems[i] : ""));
+                for (int i = _state.Locales.Count; i < stems.Count; i++) _state.Passes.Add(stems[i]);
+            }
             _state.PassIndex = 0;
             _state.RetryingRealtime = false;
             _state.Reports.Clear();
@@ -374,13 +383,16 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         // 스템을 함께 뽑은 영상은 소리가 그 스템뿐이라, 다 끝나면 BGM·SFX 스템을 섞어 소리를 원래대로 되돌린다.
+        // SFX 스템은 언어별 파일이 있으면 그 언어 것(언어별 SFX), 없으면 공용.
         private static void RemixStemPasses()
         {
-            string bgm = Path.Combine(_state.Directory, EditList.BgmStem), sfx = Path.Combine(_state.Directory, EditList.SfxStem);
-            if (!File.Exists(bgm) || !File.Exists(sfx) || !BundledFfmpeg.Available) return;
+            string bgm = Path.Combine(_state.Directory, EditList.BgmStem);
+            if (!File.Exists(bgm) || !BundledFfmpeg.Available) return;
             string name = ReplayManifest.Load(_state.Directory)?.Name;
             foreach (string pass in _state.Passes.Where(p => p.StartsWith("video:") && StemOf(p) != null))
             {
+                string sfx = EditList.SfxStemFor(_state.Directory, LocaleOf(pass));
+                if (sfx == null) continue;
                 string video = System.IO.Directory.GetFiles(_state.Directory, $"{name}_{LocaleOf(pass)}.*")
                     .FirstOrDefault(f => !f.EndsWith(".wav", StringComparison.OrdinalIgnoreCase));
                 if (video == null) continue;

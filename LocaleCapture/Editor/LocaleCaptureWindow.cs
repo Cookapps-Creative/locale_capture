@@ -147,6 +147,10 @@ namespace CookApps.LocaleCapture.Editor
                 Rect audio = Row("Audio");
                 _settings.Bgm = EditorGUI.ToggleLeft(new Rect(audio.x, audio.y, 70, audio.height), "BGM", _settings.Bgm);
                 _settings.Sfx = EditorGUI.ToggleLeft(new Rect(audio.x + 76, audio.y, 70, audio.height), "SFX", _settings.Sfx);
+                using (new EditorGUI.DisabledScope(!_settings.Sfx))
+                    _settings.PerLocaleSfx = EditorGUI.ToggleLeft(new Rect(audio.x + 152, audio.y, Mathf.Max(60, audio.width - 152), audio.height),
+                        new GUIContent("언어별 SFX(음성)", "언어에 따라 다른 음성·효과음이 있으면 켠다. SFX 스템을 언어마다 뽑고 BGM 은 가벼운 전용 패스로 뽑는다(패스 +1)."),
+                        _settings.PerLocaleSfx);
                 _settings.Audio = _settings.Bgm || _settings.Sfx;
 
                 Section("Output Format");

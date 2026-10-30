@@ -18,6 +18,9 @@ namespace CookApps.LocaleCapture
         public int FrameRate;
         public bool Audio;        // Bgm || Sfx
         public bool Bgm, Sfx;
+        // 언어에 따라 다른 소리(음성 등)가 있는 게임: SFX 스템을 언어마다 뽑고(모든 언어 패스가 SFX 만 담음), BGM 은 가벼운 전용 패스로 하나 뽑는다.
+        // 끄면 첫 언어 패스의 SFX 를 모든 언어에 쓴다(패스 하나 절약).
+        public bool PerLocaleSfx;
         public bool Flip;
         public bool StartOnPlay;   // Play 하자마자 영상 시작(START 를 누르지 않는다)
         // 언어별 재생을 실제 속도(1/fps 초)로만 돌린다. 끄면(기본) 빠르게 돌리고, 녹화와 다르게 흘러간 언어만 실제 속도로 다시 뽑는다.

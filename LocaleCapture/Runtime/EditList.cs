@@ -163,7 +163,23 @@ namespace CookApps.LocaleCapture
 
         public const string FileName = "edit.json";
         public const string BgmStem = "audio_bgm.wav";
-        public const string SfxStem = "audio_sfx.wav";
+        public const string SfxStem = "audio_sfx.wav";   // 언어 공용 SFX(언어별 SFX 를 끈 녹화)
+
+        // 언어별 SFX 스템 파일 이름(언어별 SFX 를 켠 녹화).
+        public static string SfxStemFile(string locale) => string.IsNullOrEmpty(locale) ? SfxStem : $"audio_sfx.{locale}.wav";
+
+        // 이 언어에 쓸 SFX 스템 경로: 언어별 파일이 있으면 그것, 없으면 공용, 둘 다 없으면 null.
+        public static string SfxStemFor(string directory, string locale)
+        {
+            if (string.IsNullOrEmpty(directory)) return null;
+            string own = Path.Combine(directory, SfxStemFile(locale));
+            if (!string.IsNullOrEmpty(locale) && File.Exists(own)) return own;
+            string shared = Path.Combine(directory, SfxStem);
+            return File.Exists(shared) ? shared : null;
+        }
+
+        public static bool HasAnySfxStem(string directory) =>
+            !string.IsNullOrEmpty(directory) && Directory.Exists(directory) && Directory.GetFiles(directory, "audio_sfx*.wav").Length > 0;
 
         public bool IsEmpty => Cuts.Count == 0 && Mutes.Count == 0 && Inserts.Count == 0 && Speeds.Count == 0 && Fades.Count == 0;
 
@@ -190,17 +206,34 @@ namespace CookApps.LocaleCapture
             Framings.Add(framing);
         }
 
-        // 클립이 Locale Capture 녹화면 같은 폴더의 스템 경로를 준다(없으면 null). 소리는 언어와 무관해 폴더당 한 벌이다.
-        public static bool ClipStems(string clipFile, out string bgm, out string sfx)
+        // 클립이 Locale Capture 녹화면 같은 폴더의 스템 경로를 준다(없으면 null). BGM 은 폴더당 하나, SFX 는 언어별 파일이 있으면 그 언어 것.
+        public static bool ClipStems(string clipFile, out string bgm, out string sfx) => ClipStems(clipFile, null, out bgm, out sfx);
+
+        public static bool ClipStems(string clipFile, string locale, out string bgm, out string sfx)
         {
             bgm = sfx = null;
             if (string.IsNullOrEmpty(clipFile)) return false;
             string dir = Path.GetDirectoryName(clipFile);
             if (string.IsNullOrEmpty(dir)) return false;
-            string b = Path.Combine(dir, BgmStem), s = Path.Combine(dir, SfxStem);
+            string b = Path.Combine(dir, BgmStem);
             if (File.Exists(b)) bgm = b;
-            if (File.Exists(s)) sfx = s;
+            sfx = SfxStemFor(dir, locale ?? ClipLocale(clipFile));
             return bgm != null || sfx != null;
+        }
+
+        // 녹화 클립("<이름>_<언어>.mp4")의 언어 — 같은 폴더의 언어별 SFX 스템 이름과 맞춰 본다. 모르면 null(공용 스템).
+        private static string ClipLocale(string clipFile)
+        {
+            string dir = Path.GetDirectoryName(clipFile);
+            string stem = Path.GetFileNameWithoutExtension(clipFile) ?? "";
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
+            foreach (string file in Directory.GetFiles(dir, "audio_sfx.*.wav"))
+            {
+                string name = Path.GetFileName(file);
+                string locale = name.Substring("audio_sfx.".Length, name.Length - "audio_sfx.".Length - ".wav".Length);
+                if (locale.Length > 0 && stem.EndsWith("_" + locale, System.StringComparison.OrdinalIgnoreCase)) return locale;
+            }
+            return null;
         }
 
         public void Save(string directory) => File.WriteAllText(Path.Combine(directory, FileName), JsonUtility.ToJson(this, true));

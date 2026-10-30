@@ -167,8 +167,8 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         private string BgmStem => File.Exists(Path.Combine(_directory, EditList.BgmStem)) ? Path.Combine(_directory, EditList.BgmStem) : null;
-        private string SfxStem => File.Exists(Path.Combine(_directory, EditList.SfxStem)) ? Path.Combine(_directory, EditList.SfxStem) : null;
-        private bool HasStems => BgmStem != null || SfxStem != null;
+        private string SfxStemFor(string locale) => EditList.SfxStemFor(_directory, locale);   // 언어별 파일이 있으면 그 언어 것
+        private bool HasStems => BgmStem != null || EditList.HasAnySfxStem(_directory);
 
         // ── 미리보기 ───────────────────────────────────────────────────────────
 
@@ -252,7 +252,7 @@ namespace CookApps.LocaleCapture.Editor
         // 음소거 구간이 바뀌면 원본 소리를 다시 만든다(캐시되므로 같은 편집이면 즉시).
         private string SourceAudio()
         {
-            _sourceAudio = EditPreview.BuildSourceAudio(VideoFile(_locales[_previewLocale]), BgmStem, SfxStem, _edits.Mutes, Duration);
+            _sourceAudio = EditPreview.BuildSourceAudio(VideoFile(_locales[_previewLocale]), BgmStem, SfxStemFor(_locales[_previewLocale]), _edits.Mutes, Duration);
             return _sourceAudio;
         }
 
@@ -1800,7 +1800,7 @@ namespace CookApps.LocaleCapture.Editor
                     {
                         string output = Path.Combine(outDir, $"{_manifest.Name}_{locale}_{w}x{h}.{ext}");
                         int done = index;
-                        string error = VideoEditExporter.Export(VideoFile(locale), locale, _edits, output, BgmStem, SfxStem, settings, w, h, framing,
+                        string error = VideoEditExporter.Export(VideoFile(locale), locale, _edits, output, BgmStem, SfxStemFor(locale), settings, w, h, framing,
                             p => EditorUtility.DisplayProgressBar("Export", $"{label} {locale} ({done + 1}/{total})", (done + p) / total));
                         if (error.Length > 0) { failed.Add($"{label} {locale}"); Debug.LogError($"[LocaleCapture] {label} {locale} 내보내기 실패: {error}"); }
                         index++;

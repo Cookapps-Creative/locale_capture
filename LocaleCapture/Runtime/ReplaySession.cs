@@ -284,7 +284,8 @@ namespace CookApps.LocaleCapture
             _sink.Begin(format, new[] { Request.Locale });
             if (video && !string.IsNullOrEmpty(Request.Stem))
             {
-                _stemSink = CaptureBoot.WavSinkFactory?.Invoke(Path.Combine(Request.Directory, Request.Stem == "bgm" ? EditList.BgmStem : EditList.SfxStem));
+                string stemFile = Request.Stem == "bgm" ? EditList.BgmStem : settings.PerLocaleSfx ? EditList.SfxStemFile(Request.Locale) : EditList.SfxStem;
+                _stemSink = CaptureBoot.WavSinkFactory?.Invoke(Path.Combine(Request.Directory, stemFile));
                 _stemSink?.Begin(format, new[] { Request.Locale });
             }
             if (audio) { AudioRenderer.Start(); _audioStarted = true; CaptureClock.SyncDsp(); }
