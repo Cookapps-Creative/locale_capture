@@ -35,6 +35,30 @@ namespace CookApps.LocaleCapture
         public int TotalFrames { get; private set; }
         public float Progress => TotalFrames <= 0 ? 0f : Mathf.Clamp01(Frame / (float) TotalFrames);
 
+        // 기기 언어 흉내는 Application.systemLanguage 만으로는 모자란다 — Unity Localization 의 SystemLocaleSelector 는
+        // CultureInfo.CurrentUICulture 를 먼저 보므로, 한국어 Windows 에서 en-US 패스를 돌리면 언어 시스템은 ko-KR 을 고르고
+        // 게임(복원된 저장 값)은 영어로 부팅해 초기화가 엇갈린다. UI 문화권만 바꾼다(숫자·날짜 파싱이 쓰는 CurrentCulture 는 그대로).
+        private System.Globalization.CultureInfo _savedUiCulture;
+
+        private void ApplyUiCulture(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return;
+            try
+            {
+                System.Globalization.CultureInfo culture = System.Globalization.CultureInfo.GetCultureInfo(code.Replace('_', '-'));
+                _savedUiCulture = System.Globalization.CultureInfo.CurrentUICulture;
+                System.Globalization.CultureInfo.CurrentUICulture = culture;
+            }
+            catch (System.Globalization.CultureNotFoundException) { }
+        }
+
+        private void RestoreUiCulture()
+        {
+            if (_savedUiCulture == null) return;
+            System.Globalization.CultureInfo.CurrentUICulture = _savedUiCulture;
+            _savedUiCulture = null;
+        }
+
         // 프레임 끝. 배치 모드는 화면을 그리지 않아 WaitForEndOfFrame 이 오지 않으므로 다음 프레임으로 대신한다.
         private static readonly WaitForEndOfFrame EndOfFrame = new WaitForEndOfFrame();
         private static object FrameEnd => Application.isBatchMode ? null : EndOfFrame;
@@ -177,6 +201,7 @@ namespace CookApps.LocaleCapture
                 _passName = Request.Type == SessionRequest.Kind.Video ? Request.Locale : Request.Type == SessionRequest.Kind.BgmStem ? "bgm" : "sfx";
                 CaptureClock.Begin(_manifest.ClockBaseUtcTicks, _manifest.BaseTickCount, fps, _manifest.Seed,
                     Request.OverrideSystemLanguage ? Request.SystemLanguage : (SystemLanguage?) null);
+                if (Request.OverrideSystemLanguage) ApplyUiCulture(Request.Locale);
                 NetworkTape.BeginReplay(dir, Request.Locale, Request.LiveMarkers, fps,
                     string.IsNullOrEmpty(Request.RecordedLocale) ? _manifest.RecordedLocale : Request.RecordedLocale, Request.RecordedLocaleForms);
                 CaptureScreen.Begin(_manifest, false);
@@ -367,6 +392,9 @@ namespace CookApps.LocaleCapture
                     {
                         CaptureVerify.Add(Frame, "로딩", $"'{waitingFor}' 이 {limit}초 안에 끝나지 않았다 — 기록 때와 다른 로딩");
                         nextMarker++;
+                        // 녹화 언어가 아닌 패스에서 게임이 언어 시스템 초기화를 기다리다 서면 로딩 신호가 더 안 온다 — 초기화를 끝내 준다.
+                        if (!string.IsNullOrEmpty(Request.Locale) && LocalizationBridge.FinishPendingInitialization())
+                            Debug.Log($"[LocaleCapture] 로딩 대기가 끝나지 않아 언어 시스템 초기화를 동기로 끝냈다 (프레임 {Frame})");
                     }
                 }
                 holdStarted = -1f;
@@ -625,6 +653,7 @@ namespace CookApps.LocaleCapture
             AddressablesProbe.Unregister();
             CaptureMarkers.Clear();
             CaptureClock.End();
+            RestoreUiCulture();
             CaptureScreen.End();
             RandomTrace.End();
             RestoreFramePacing();

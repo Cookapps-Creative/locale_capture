@@ -6,13 +6,13 @@
 ## 설치
 
 1. `LocaleCapture_*.unitypackage` 를 가져온다(Assets → Import Package → Custom Package). `Assets/CookApps/LocaleCapture` 에 들어간다.
-2. 컴파일 뒤 `Tools > Locale Capture` 를 열어 맨 위가 "점검 통과" 인지 본다.
+2. 컴파일 뒤 `Creative > Locale Capture` 를 열어 맨 위가 "점검 통과" 인지 본다.
 
 게임 쪽에 넣을 코드나 패치는 없다.
 
 ## 사용
 
-1. `Tools > Locale Capture` → 언어 체크, 해상도·품질, Output File 의 File Name·Path → **녹화 대기**.
+1. `Creative > Locale Capture` → 언어 체크, 해상도·품질, Output File 의 File Name·Path → **녹화 대기**.
 2. Unity **Play** 를 직접 누른다. 대기를 누르면 플레이 화면이 Device Simulator 로 바뀌고, 언어별 재생은 자동으로 Game 뷰에서(기록 때 화면 크기·안전 영역 그대로), 끝나면 다시 Simulator 로 돌아온다. Resolution 이 Custom 이면 그 크기 그대로의 Simulator 기기(`LocaleCapture 1080x1920` 등, 노치 없음)를 `Devices/` 에 만들어 자동으로 고른다 — 영상이 출력 크기로 바로 나와 블러·늘림이 없다. Custom 이 아니면 Simulator 에서 고른 기기 그대로이고, 기기 비율이 출력 비율과 다르면 편집 Export 의 비율·Blur 로 맞춘다. 빌드 설정의 첫 씬(켜진 씬이 없으면 목록 첫 씬)부터 열리고, 부팅부터 기록된다.
 3. 원하는 장면에서 **START** → 플레이 → **STOP**. START 부터 STOP 까지만 녹화된다. START 전에는 STOP 이 없고, START 전에 Play 를 끄면 취소된다. 녹화 중 인스펙터에서 오브젝트·컴포넌트 체크박스(켜기/끄기)를 바꾸면 그 순간이 기록돼 언어별 영상에도 같은 프레임에 반영된다(UI 숨기기 등). Input 의 **바로 녹화** 를 켜 두면 START 없이 Play 부터 녹화가 시작되고 STOP 만 누른다.
 4. 언어마다 플레이 모드가 자동으로 다시 열리며 부팅부터 같은 플레이를 재생하고, START 이후만 녹화한다. BGM·SFX 스템은 앞 언어 패스들이 함께 뽑아(첫 언어 = SFX, 둘째 = BGM) 따로 패스를 돌지 않고, 끝나면 그 영상들의 소리를 다시 섞어 원래대로 둔다. 언어에 따라 다른 음성·효과음이 있는 게임은 Audio 의 **언어별 SFX(음성)** 를 켠다 — 모든 언어 패스가 자기 SFX 스템(`audio_sfx.<언어>.wav`)을 뽑고 BGM 은 영상 없는 가벼운 패스로 하나 뽑는다(패스 +1). 편집 창·Export 도 언어마다 자기 SFX 스템을 쓴다. 편집은 창 맨 아래 **Edit Videos** 로 연다.
@@ -35,7 +35,7 @@
 | 화면 | 기록 때의 안전 영역·DPI·노치를 재생에 그대로 줌 — Device Simulator 로 기록하고 게임뷰에서 재생해도 UI 배치가 같다 |
 | 입력 | Input System 은 이벤트 트레이스, 예전 Input 은 게임이 물은 값을 프레임별 기록. 기록 때도 실제 장치 입력을 가로채 가상 장치로 프레임 시작에 넣는다(재생과 같은 시점) — 손을 뗀 순간이 게임 Update 사이에 처리돼 "뗐다"를 놓치는 일이 녹화에만 생기지 않게 |
 | 로딩 시간 차이 | 씬·Addressables·비동기 작업 완료를 기록해, 재생 때 같은 로딩이 끝날 때까지 게임 시간을 멈춤(씬은 실제로 읽는 중일 때만. 기다린 프레임의 난수 소비는 되돌림). 씬을 일찍 다 읽으면 기록 때 열린 프레임까지 활성화를 미룸 |
-| 언어 전환 | 저장 값 안의 녹화 언어 표기(ko-KR·Korean 등)를 재생 언어로 바꾸고, 기기 언어도 그 언어로. 그래도 다르면 부팅이 끝난 뒤(START 이후) Unity Localization·I2 선택 언어를 바꿈 |
+| 언어 전환 | 저장 값 안의 녹화 언어 표기(ko-KR·Korean 등)를 재생 언어로 바꾸고, 기기 언어와 UI 문화권(CurrentUICulture)도 그 언어로. 그래도 다르면 부팅이 끝난 뒤(START 이후) Unity Localization·I2 선택 언어를 바꿈 |
 | BGM·SFX 분리 | 반복 재생하는 10초 이상 소리를 BGM 으로 보고 패스마다 끔 |
 
 바꿔치기는 녹화·재생 동안에만 Harmony(동봉, MIT)로 건다. 시간을 프로젝트 코드에서만 바꾸는 건 패키지의 네트워크 서명처럼 실제 시각이 필요한 곳을 건드리지 않기 위해서다.

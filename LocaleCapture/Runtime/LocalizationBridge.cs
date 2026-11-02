@@ -58,6 +58,28 @@ namespace CookApps.LocaleCapture
             catch { return false; }
         }
 
+        // Unity Localization 초기화가 시작됐는데 끝나지 않았으면 동기로 끝낸다(WaitForCompletion). 끝냈으면 true.
+        // 초기화를 새로 시작하지는 않는다 — 게임이 테이블 후처리를 걸기 전에 초기화가 돌면 문구가 어긋난다.
+        public static bool FinishPendingInitialization()
+        {
+            try
+            {
+                if (UnitySettings == null) return false;
+                if (!(UnitySettings.GetProperty("HasSettings", Static)?.GetValue(null) is bool has) || !has) return false;
+                object settings = UnitySettings.GetMethod("GetInstanceDontCreateDefault", Static)?.Invoke(null, null);
+                FieldInfo field = UnitySettings.GetField("m_InitializingOperationHandle", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (settings == null || field == null) return false;
+                object handle = field.GetValue(settings);
+                if (handle == null) return false;
+                Type type = handle.GetType();
+                if (!(type.GetMethod("IsValid")?.Invoke(handle, null) is bool valid) || !valid) return false;
+                if (type.GetProperty("IsDone")?.GetValue(handle) is bool done && done) return false;
+                type.GetMethod("WaitForCompletion")?.Invoke(handle, null);
+                return true;
+            }
+            catch { return false; }
+        }
+
         private static object FindUnityLocale(string code)
         {
             object provider = UnitySettings.GetProperty("AvailableLocales", Static)?.GetValue(null);

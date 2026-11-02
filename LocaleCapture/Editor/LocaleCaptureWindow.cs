@@ -24,7 +24,7 @@ namespace CookApps.LocaleCapture.Editor
         private List<string> _health;
         private Vector2 _scroll;
 
-        [MenuItem("Tools/Locale Capture")]
+        [MenuItem("Creative/Locale Capture")]
         private static void Open()
         {
             var w = GetWindow<LocaleCaptureWindow>("Locale Capture");
