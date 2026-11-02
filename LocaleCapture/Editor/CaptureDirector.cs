@@ -366,6 +366,12 @@ namespace CookApps.LocaleCapture.Editor
             Save();
             if (success) Debug.Log("[LocaleCapture] 완료 — " + string.Join(" · ", _state.Reports));
             else Debug.LogWarning("[LocaleCapture] " + _state.Message);
+            // 실패(중단)했거나 녹화와 다르게 재생된 테이크는 보고서로 남긴다 — 창의 'GitHub 이슈로 보고' 가 쓴다.
+            if (!success || _state.Reports.Any(r => r.StartsWith("다름")))
+            {
+                try { IssueReport.Write(dir, _state.Message, _state.Reports, _state.Settings, _state.Locales); }
+                catch (Exception e) { Debug.LogWarning("[LocaleCapture] 보고서 저장 실패: " + e.Message); }
+            }
             if (success) EditorApplication.delayCall += () => Completed?.Invoke(dir);   // 편집 창은 열지 않는다(창 맨 아래 Edit Videos 로)
         }
 

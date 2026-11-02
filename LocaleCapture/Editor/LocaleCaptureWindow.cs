@@ -110,6 +110,8 @@ namespace CookApps.LocaleCapture.Editor
             // 성공 = 끝까지 녹화됐고 녹화와 다르게 재생된 곳이 없음. 자세한 내용은 콘솔·verify 폴더.
             bool failed = !message.StartsWith("완료") || CaptureDirector.Reports.Any(r => r.StartsWith("다름"));
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
+            string report = failed ? IssueReport.LastPath : null;
+            if (report != null && GUI.Button(Row(" "), "GitHub 이슈로 보고", EditorStyles.miniButton)) IssueReport.Open(report);
         }
 
         // Unity Recorder 처럼: 위에 녹화 버튼·상태 막대, 아래에 Description / Input / Output Format / Output File 구획.
