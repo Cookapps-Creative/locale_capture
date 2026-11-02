@@ -9,6 +9,9 @@ namespace CookApps.LocaleCapture.Editor
     //   Permissions: Issues Read and write. 만료는 1년.  base64: PowerShell  [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("github_pat_..."))
     internal static class IssueToken
     {
+        // 이슈가 올라갈 저장소(owner/name). 토큰이 Repository access 에 이 저장소를 갖고 있어야 한다.
+        public const string Repo = "Cookapps-Creative/locale_capture";
+
         private const string Base64 = "";
 
         public static string Value

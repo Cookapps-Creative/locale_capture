@@ -16,7 +16,7 @@ namespace CookApps.LocaleCapture.Editor
     [InitializeOnLoad]
     internal static class IssueReport
     {
-        public const string Repo = "Cookapps-Creative/locale_capture";
+        public const string Repo = IssueToken.Repo;
         public const string RepoUrl = "https://github.com/" + Repo;
         private const string Label = "recording-failure";
         private const string Tag = "LocaleCapture";
