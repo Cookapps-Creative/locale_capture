@@ -112,13 +112,16 @@ namespace CookApps.LocaleCapture.Editor
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
             string report = failed ? IssueReport.LastPath : null;
             if (report == null) return;
+            // 전송 결과는 라벨 칸(150px)에 안 들어가므로 상자 한 줄로 따로, 버튼은 그 아래.
+            if (!string.IsNullOrEmpty(IssueReport.Status))
+                Box(IssueReport.Status, IssueReport.SentUrl != null ? MessageType.Info : IssueReport.Sending ? MessageType.None : MessageType.Warning);
             if (IssueReport.SentUrl != null)
             {
-                if (GUI.Button(Row(IssueReport.Status), "이슈 열기", EditorStyles.miniButton)) Application.OpenURL(IssueReport.SentUrl);
+                if (GUI.Button(Row(" "), "이슈 열기", EditorStyles.miniButton)) Application.OpenURL(IssueReport.SentUrl);
                 return;
             }
             using (new EditorGUI.DisabledScope(IssueReport.Sending))
-                if (GUI.Button(Row(IssueReport.Status), "GitHub 이슈 보내기", EditorStyles.miniButton)) IssueReport.Send(report);
+                if (GUI.Button(Row(" "), "GitHub 이슈 보내기", EditorStyles.miniButton)) IssueReport.Send(report);
             if (IssueReport.Sending) Repaint();
         }
 
