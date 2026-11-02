@@ -111,7 +111,15 @@ namespace CookApps.LocaleCapture.Editor
             bool failed = !message.StartsWith("완료") || CaptureDirector.Reports.Any(r => r.StartsWith("다름"));
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
             string report = failed ? IssueReport.LastPath : null;
-            if (report != null && GUI.Button(Row(" "), "GitHub 이슈로 보고", EditorStyles.miniButton)) IssueReport.Open(report);
+            if (report == null) return;
+            if (IssueReport.SentUrl != null)
+            {
+                if (GUI.Button(Row(IssueReport.Status), "이슈 열기", EditorStyles.miniButton)) Application.OpenURL(IssueReport.SentUrl);
+                return;
+            }
+            using (new EditorGUI.DisabledScope(IssueReport.Sending))
+                if (GUI.Button(Row(IssueReport.Status), "GitHub 이슈 보내기", EditorStyles.miniButton)) IssueReport.Send(report);
+            if (IssueReport.Sending) Repaint();
         }
 
         // Unity Recorder 처럼: 위에 녹화 버튼·상태 막대, 아래에 Description / Input / Output Format / Output File 구획.
