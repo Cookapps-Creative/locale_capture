@@ -110,6 +110,13 @@ namespace CookApps.LocaleCapture.Editor
             // 성공 = 끝까지 녹화됐고 녹화와 다르게 재생된 곳이 없음. 자세한 내용은 콘솔·verify 폴더.
             bool failed = !message.StartsWith("완료") || CaptureDirector.Reports.Any(r => r.StartsWith("다름"));
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
+            // 성공이지만 눈으로 한 번 볼 곳(누른 대상이 녹화와 달랐으나 플레이는 같게 흘러감)은 작은 글씨로. 자세한 내용은 콘솔.
+            if (!failed)
+                foreach (string caution in CaptureDirector.Reports.Where(r => r.StartsWith("주의")))
+                {
+                    int cut = caution.IndexOf(", 처음", StringComparison.Ordinal);
+                    Note("⚠ " + (cut < 0 ? caution : caution.Substring(0, cut)).Substring(5) + " — 플레이는 녹화와 같게 흘러갔다. 영상을 한 번 확인한다");
+                }
             string report = failed ? IssueReport.LastPath : null;
             if (report == null) return;
             // 전송 결과는 라벨 칸(150px)에 안 들어가므로 상자 한 줄로 따로, 버튼은 그 아래.
@@ -219,6 +226,17 @@ namespace CookApps.LocaleCapture.Editor
             r.xMin += Pad;
             r.xMax -= Pad;
             EditorGUI.HelpBox(r, text, type);
+        }
+
+        // 안내 상자 아래에 붙는 작은 글씨 한 줄(길면 줄바꿈).
+        private void Note(string text)
+        {
+            float width = position.width - Pad * 2 - 20;
+            GUIStyle style = EditorStyles.wordWrappedMiniLabel;
+            Rect r = EditorGUILayout.GetControlRect(false, style.CalcHeight(new GUIContent(text), width - 12));
+            r.xMin += Pad + 6;
+            r.xMax -= Pad + 6;
+            EditorGUI.LabelField(r, text, style);
         }
 
         // 녹화 순서 안내.

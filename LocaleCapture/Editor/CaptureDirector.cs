@@ -320,11 +320,15 @@ namespace CookApps.LocaleCapture.Editor
                     }
                     _state.RetryingRealtime = false;
                     if (report != null) _state.PassHashes.Add(report.Pass + "=" + report.StateHash);
+                    // 누른 곳이 달라도 난수 상태가 녹화와 끝까지 같았으면 플레이는 같게 흘러간 것 — 실패가 아니라 주의로 남긴다
+                    // (언어끼리 플레이가 갈렸으면 끝에서 CompareHashes 가 "다름" 으로 잡는다). 난수까지 어긋났으면 다름.
                     // 화면이 몇 프레임 늦고 빨라도 누른 곳이 모두 같으면 결과는 같다 — 그땐 참고로만.
+                    bool tapsDiffer = report != null && report.TapMismatches.Count > 0;
+                    bool playDiverged = tapsDiffer && report.StateMismatchFrames > 0;
                     if (report != null && report.UiMismatches.Count > 0)
-                        _state.Reports.Add($"{(report.TapMismatches.Count > 0 ? "다름" : "참고")} — {report.Pass}: 녹화와 다른 때 열리고 닫힌 화면 {report.UiMismatches.Count}건, 처음 {report.UiMismatches[0]}");
-                    if (report != null && report.TapMismatches.Count > 0)
-                        _state.Reports.Add($"다름 — {report.Pass}: 녹화와 다른 곳이 눌림 {report.TapMismatches.Count}건, 처음 {report.TapMismatches[0]}");
+                        _state.Reports.Add($"{(playDiverged ? "다름" : "참고")} — {report.Pass}: 녹화와 다른 때 열리고 닫힌 화면 {report.UiMismatches.Count}건, 처음 {report.UiMismatches[0]}");
+                    if (tapsDiffer)
+                        _state.Reports.Add($"{(playDiverged ? "다름" : "주의")} — {report.Pass}: 녹화와 다른 곳이 눌림 {report.TapMismatches.Count}건, 처음 {report.TapMismatches[0]}");
                     if (report != null && report.InputDelivered < report.InputQueued)
                         _state.Reports.Add($"다름 — {report.Pass}: 녹화한 입력 {report.InputQueued}개 중 {report.InputDelivered}개만 들어감 ({report.InputDevices})");
                     if (!_state.LastCompleted) { Finish(_state.LastError ?? "녹화가 중단됐다", false); break; }
