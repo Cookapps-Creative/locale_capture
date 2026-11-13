@@ -409,11 +409,16 @@ namespace CookApps.LocaleCapture.Editor
 
         private List<string> SelectedLocales() => _locales.Where(_selected.Contains).ToList();
 
-        private string ResolveDir()
+        private string ResolveDir() => ResolveDir(_recordingsDir);
+
+        private static string ResolveDir(string dir)
         {
             string root = Directory.GetParent(Application.dataPath).FullName;
-            return Path.IsPathRooted(_recordingsDir) ? _recordingsDir : Path.Combine(root, _recordingsDir);
+            return Path.IsPathRooted(dir) ? dir : Path.Combine(root, dir);
         }
+
+        // Output File 의 Path(마지막으로 저장된 값). 창이 닫혀 있어도 쓸 수 있다 — 보고서가 여기에 남는다.
+        internal static string SavedOutputDir => ResolveDir(EditorPrefs.GetString(Prefix + "RecordingsDir", "Recordings/LocaleCapture"));
 
         private void StartRecording()
         {

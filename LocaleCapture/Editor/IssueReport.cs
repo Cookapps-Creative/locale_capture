@@ -9,7 +9,7 @@ using UnityEngine.Networking;
 
 namespace CookApps.LocaleCapture.Editor
 {
-    // 녹화가 실패하거나 녹화와 다르게 재생된 테이크의 보고서를 Library/LocaleCapture/reports/ 에 남긴다.
+    // 녹화가 실패하거나 녹화와 다르게 재생된 테이크의 보고서를 창의 Output File > Path 폴더에 남긴다.
     // 창의 "GitHub 이슈 보내기" 가 그 보고서를 저장소 이슈로 올린다(IssueToken 의 토큰, GitHub 계정 없이). 토큰이 없거나 전송이
     // 실패하면 보고서를 클립보드에 복사하고 새 이슈 페이지를 연다. 누르기 전에는 아무것도 밖으로 나가지 않는다.
     // 콘솔은 이 도구 태그가 붙은 줄만 모은다(게임 로그·계정 정보 제외).
@@ -24,7 +24,7 @@ namespace CookApps.LocaleCapture.Editor
         private const int MaxLogs = 40, MaxIssuesPerPass = 15, MaxMismatches = 5, MaxUrlBody = 6000;
         private static readonly List<string> _logs = new List<string>();
         private static UnityWebRequest _sending;
-        private static string ReportsDir => Path.GetFullPath("Library/LocaleCapture/reports");
+        private static string ReportsDir => LocaleCaptureWindow.SavedOutputDir;
 
         public static string LastPath
         {
