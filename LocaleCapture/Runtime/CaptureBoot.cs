@@ -20,6 +20,8 @@ namespace CookApps.LocaleCapture
         public string RecordedLocale;          // 재생: 녹화 언어. 언어 표기만 다른 요청을 녹화의 같은 요청으로 맞춘다
         public string[] RecordedLocaleForms;   // 재생: 녹화 언어의 여러 표기(ko-KR·ko_KR·Korean·ko 등)
         public bool Realtime;                  // 재생: 실제 1/fps 초 간격으로 묶는다(끄면 기기가 낼 수 있는 만큼 빨리)
+        public bool NoLoadDelay;               // Addressables 에셋 데이터베이스 모드의 가짜 로딩 지연 없이 돈다(기록 형식 4 부터)
+        public bool CollapseLoads;             // Addressables 의 연쇄 로딩을 한 프레임에 끝낸다(기록 형식 5 부터)
         public CaptureSettings Settings;
         public int Fps;
         public int Seed;
@@ -37,6 +39,14 @@ namespace CookApps.LocaleCapture
     public static class CaptureBoot
     {
         public static SessionRequest Pending;
+        // 에디터의 Addressables(Use Asset Database) 는 로드마다 가짜 지연(Simulated Load Delay, 기본 0.1초)을 넣고 "지금 + 지연" 시각에 끝낸다.
+        // 실제 빌드에는 없는 지연이고, 시계에 묶여 있어 로딩 대기와 얽히면 로드가 안 끝나거나 일찍 끝난다. 세션 동안에는 지연 없이 바로 끝낸다.
+        // 에디터가 패스를 걸 때 켜고(Arm), 작업이 끝나면 끈다. 에셋 제공자가 만들어질 때 에디터 패치가 이 값을 본다.
+        public static bool NoLoadDelay;
+        // Addressables 는 완료 콜백 안에서 끝난 작업의 콜백을 다음 프레임으로 미룬다. 그래서 "로드 → 콜백에서 다음 로드" 로 이어지는 연쇄는
+        // 단계마다 한 프레임씩 걸리고, 단계 수는 언어마다(언어 테이블·글꼴 수) 다르다 — 그 뒤 흐름이 언어에 따라 한두 프레임 달라진다.
+        // 세션 동안에는 미뤄진 콜백을 같은 프레임에 이어서 불러, 바로 끝나는 로드의 연쇄가 단계 수와 상관없이 한 프레임에 끝나게 한다.
+        public static bool CollapseLoads;
         public static Func<SessionRequest, IFrameSink> VideoSinkFactory;
         public static Func<string, IFrameSink> WavSinkFactory;
         public static event Action<SessionResult> Ended;

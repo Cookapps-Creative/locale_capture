@@ -21,6 +21,8 @@ namespace CookApps.LocaleCapture
     {
         private const float SceneHoldSeconds = 20f;   // 씬 로드를 이만큼 기다려도 안 오면 그냥 간다
         private const float LoadHoldSeconds = 5f;     // 그 밖의 로딩
+        private const int MaxLoadNames = 3000;        // 진단용으로 남기는 로딩 이름 수
+        private const float LoadClockAfterSeconds = 2f;   // 로딩 대기가 이만큼 안 풀리면 로딩 코드의 시계를 따로 돌린다(지연 로드를 기다리다 선 경우)
         private const float ServerHoldSeconds = 20f;  // 실제 서버에서 받는 응답
         private const float BgmMinLength = 10f;       // 반복 재생하는 이 길이 이상의 소리를 BGM 으로 본다
 
@@ -88,6 +90,11 @@ namespace CookApps.LocaleCapture
         private readonly System.Diagnostics.Stopwatch _replayClock = new System.Diagnostics.Stopwatch();   // 재생에 걸린 실제 시간(로그)
         private double _startReachedSeconds = -1;
         private int _nextToggle;   // 재생에서 다음에 적용할 인스펙터 켜기/끄기
+        private bool _loadClockTicked;
+        // 로딩 대기 프레임 하나에 흐르는 게임 시간. 0 으로는 둘 수 없어(프레임 고정이 풀린다) 아주 작게 준다. 2 의 거듭제곱이라
+        // 프레임 간격(1/fps)에서 빼고 더해도 반올림 오차가 없다 — 대기가 풀린 뒤 그만큼을 덜어 내면 엔진 시간이 녹화와 비트까지 같아진다.
+        private const float HoldDeltaTime = 1f / 131072f;   // 2^-17 초 ≈ 7.6μs
+        private float _heldTime;   // 대기 프레임들에서 흐른 시간 중 아직 덜어 내지 않은 것
 
         private void Pace()
         {
@@ -103,12 +110,15 @@ namespace CookApps.LocaleCapture
 
         // 기록
         private InputEventTrace _trace;
+        private const long TraceMaxBytes = 512L << 20;   // 입력 기록 버퍼의 한도(필요한 만큼만 늘어난다)
+        private long _traceSeen;                         // 기록기가 받은 입력 수 — 버퍼에 남은 수보다 많으면 덮어써진 것
         private InputRelay _relay;
 
         // 재생
         private InputTracePlayer _player;
         private readonly List<TapProbe.Tap> _replayTaps = new List<TapProbe.Tap>();
         private readonly List<UiTrace.Event> _replayUi = new List<UiTrace.Event>();
+        private readonly List<HitTrace.Event> _replayHits = new List<HitTrace.Event>();
         private IFrameSink _sink;
         private IFrameSink _stemSink;   // 영상 패스가 함께 뽑는 스템 WAV
         private RenderTexture _rt, _copy;
@@ -171,6 +181,8 @@ namespace CookApps.LocaleCapture
             ForceBackgroundInput();
             CaptureMarkers.Clear();
             UiTrace.Begin();
+            HitTrace.Begin();
+            TapProbe.Reset();
             string dir = Request.Directory;
             int fps = Mathf.Max(1, Request.Fps);
 
@@ -180,14 +192,20 @@ namespace CookApps.LocaleCapture
                 {
                     Name = Path.GetFileName(dir), Fps = fps, CreatedAt = DateTime.Now.ToString("s"),
                     Seed = Request.Seed, ClockBaseUtcTicks = Request.ClockBaseUtcTicks, BaseTickCount = Request.BaseTickCount,
+                    TraceVersion = ReplayManifest.CurrentTraceVersion, SeedScheme = CaptureClock.CurrentSeedScheme,
                 };
-                CaptureClock.Begin(Request.ClockBaseUtcTicks, Request.BaseTickCount, fps, Request.Seed, null);
+                CaptureClock.Begin(Request.ClockBaseUtcTicks, Request.BaseTickCount, fps, Request.Seed, null, _manifest.SeedScheme);
+                ThreadGate.BeginRecord();
                 CaptureScreen.Begin(_manifest, true);
                 RandomTrace.Begin(_manifest.RandomCalls);
                 NetworkTape.BeginRecord(dir, Request.LiveMarkers);
                 CaptureInput.BeginRecord(Path.Combine(dir, CaptureInput.FileName));
                 _relay = new InputRelay();   // 실제 입력을 재생과 같은 시점에 넣는다(트레이스보다 먼저)
-                _trace = new InputEventTrace { recordFrameMarkers = false };   // 프레임 경계는 EventCounts 로 직접 잰다
+                // 버퍼는 필요한 만큼 늘린다 — 기본값(1MB 고정)은 가득 차면 가장 오래된 입력부터 덮어써서, 마우스를 많이 움직이는
+                // 긴 녹화는 앞부분 입력이 조용히 사라지고 프레임별 개수(EventCounts)와도 어긋난다. 프레임 경계는 EventCounts 로 직접 잰다.
+                _trace = new InputEventTrace(1 << 20, true, TraceMaxBytes, 4 << 20) { recordFrameMarkers = false };
+                _traceSeen = 0;
+                _trace.onEvent += _ => _traceSeen++;
                 _trace.Enable();
                 UncapFramePacing();
                 Application.targetFrameRate = fps;   // 기록은 실시간에 맞춘다
@@ -200,13 +218,15 @@ namespace CookApps.LocaleCapture
                 TotalFrames = _manifest.Frames;
                 _passName = Request.Type == SessionRequest.Kind.Video ? Request.Locale : Request.Type == SessionRequest.Kind.BgmStem ? "bgm" : "sfx";
                 CaptureClock.Begin(_manifest.ClockBaseUtcTicks, _manifest.BaseTickCount, fps, _manifest.Seed,
-                    Request.OverrideSystemLanguage ? Request.SystemLanguage : (SystemLanguage?) null);
+                    Request.OverrideSystemLanguage ? Request.SystemLanguage : (SystemLanguage?) null, _manifest.SeedScheme);
+                ThreadGate.BeginReplay(_manifest.TraceVersion >= 3 ? _manifest.ThreadPosts : null);
                 if (Request.OverrideSystemLanguage) ApplyUiCulture(Request.Locale);
                 NetworkTape.BeginReplay(dir, Request.Locale, Request.LiveMarkers, fps,
-                    string.IsNullOrEmpty(Request.RecordedLocale) ? _manifest.RecordedLocale : Request.RecordedLocale, Request.RecordedLocaleForms);
+                    string.IsNullOrEmpty(Request.RecordedLocale) ? _manifest.RecordedLocale : Request.RecordedLocale, Request.RecordedLocaleForms,
+                    _manifest.TraceVersion >= 2);
                 CaptureScreen.Begin(_manifest, false);
                 CaptureInput.BeginReplay(Path.Combine(dir, CaptureInput.FileName));
-                CaptureVerify.Begin(_passName, Request.Locale, _manifest.RandomCalls, _manifest.Taps, _replayTaps, _manifest.UiEvents, _replayUi);
+                CaptureVerify.Begin(_passName, Request.Locale, _manifest, _replayTaps, _replayUi, _replayHits);
                 RandomTrace.Begin(new List<RandomTrace.Call>());
                 _player = new InputTracePlayer(Path.Combine(dir, _manifest.TraceFile), _manifest.EventCounts);
                 UncapFramePacing();
@@ -241,10 +261,13 @@ namespace CookApps.LocaleCapture
                 _drain.Clear();
                 CaptureMarkers.Drain(_drain);
                 foreach (string hit in _drain) _manifest.Markers.Add(new ReplayManifest.Marker { Frame = Frame, Name = hit });
+                CaptureMarkers.DrainLoaded(Frame, _manifest.Loads, MaxLoadNames);
                 RandomStates.Append(_manifest.RandomStates);
                 TapProbe.Check(Frame, _manifest.Taps);
                 UiTrace.Check(Frame, _manifest.UiEvents);
+                HitTrace.Check(Frame, _manifest.HitEvents);
                 _manifest.FrameMs.Add(FrameMs());
+                // 녹화 언어는 게임이 언어 시스템 초기화를 끝낸 뒤에만 읽는다(SelectedCode 가 초기화를 건드리지 않는다)
                 if (string.IsNullOrEmpty(_manifest.RecordedLocale) && Frame >= 60 && Frame % 30 == 0)
                     _manifest.RecordedLocale = LocalizationBridge.SelectedCode();
                 double toolMs = _tool.Elapsed.TotalMilliseconds;
@@ -266,8 +289,14 @@ namespace CookApps.LocaleCapture
 
         private void SaveRecording()
         {
+            // 입력 기록이 한도까지 차서 앞쪽 입력이 덮어써졌으면 이 기록은 재생할 수 없다 — 저장하지 않고 실패로 알린다.
+            long dropped = _traceSeen - _trace.eventCount;
+            if (dropped > 0)
+                throw new InvalidOperationException($"입력 기록이 한도({TraceMaxBytes >> 20}MB)를 넘어 앞쪽 입력 {dropped}개가 지워졌다 — 이 기록은 재생할 수 없다. 더 짧게 나눠 녹화한다");
             _manifest.Frames = Frame;
-            if (string.IsNullOrEmpty(_manifest.RecordedLocale)) _manifest.RecordedLocale = LocalizationBridge.SelectedCode();
+            _manifest.RandomCreations = new List<CaptureClock.RandomCreation>(CaptureClock.Creations);
+            _manifest.ThreadPosts = new List<ThreadGate.Post>(ThreadGate.Log);
+            if (string.IsNullOrEmpty(_manifest.RecordedLocale)) _manifest.RecordedLocale = LocalizationBridge.SelectedCode(true);
             Directory.CreateDirectory(Request.Directory);
             _trace.WriteTo(Path.Combine(Request.Directory, _manifest.TraceFile));
             _manifest.Save(Request.Directory);
@@ -321,6 +350,7 @@ namespace CookApps.LocaleCapture
 
             int nextMarker = 0;
             float holdStarted = -1f;
+            int heldKey = -1;   // 지금 기다리는 대상(동기 지점 번호, 서버 응답은 -2) — 대상이 바뀌면 기다린 시간을 다시 잰다
             int firstInput = _manifest.EventCounts.FindIndex(c => c > 0);
             _fastUntil = Request.Realtime
                 ? Math.Max(0, Math.Min(firstInput < 0 ? _manifest.Frames : firstInput, _manifest.VideoStartFrame > 0 ? _manifest.VideoStartFrame : int.MaxValue) - 30)
@@ -337,6 +367,7 @@ namespace CookApps.LocaleCapture
                 if (_finished) break;
                 if (Frame == _manifest.VideoStartFrame) _startReachedSeconds = _replayClock.Elapsed.TotalSeconds;
                 if (Frame == 1) { _player.DisableRealDevices(); AddressablesProbe.Register(); }
+                TapProbe.Latch(Frame);   // 아래에서 로딩 대기로 넘어가도 이 Unity 프레임의 눌림을 놓치지 않게
 
                 _drain.Clear();
                 CaptureMarkers.Drain(_drain);
@@ -345,6 +376,7 @@ namespace CookApps.LocaleCapture
                     if (!_arrived.TryGetValue(hit, out Queue<int> q)) _arrived[hit] = q = new Queue<int>();
                     q.Enqueue(Frame);
                 }
+                CaptureMarkers.DrainLoaded(Frame, CaptureVerify.Loads, MaxLoadNames);
 
                 // 기록 때 이 프레임까지 끝났던 로딩이 아직이면 게임 시간을 멈추고 기다린다(로딩 시간 차이 흡수).
                 bool hold = false;
@@ -372,15 +404,29 @@ namespace CookApps.LocaleCapture
                 if (waitingFor != null)
                 {
                     float limit = server != null ? ServerHoldSeconds : waitingFor.StartsWith("scene:") ? SceneHoldSeconds : LoadHoldSeconds;
-                    if (holdStarted < 0) holdStarted = Time.realtimeSinceStartup;
+                    // 기다린 시간은 대상마다 따로 잰다 — 앞 대상(씬 20초 한도)을 오래 기다린 뒤 이어지는 대상(로딩 5초 한도)이 곧바로 시간 초과가 되지 않게.
+                    int holdKey = server != null ? -2 : nextMarker;
+                    if (holdStarted < 0 || holdKey != heldKey) { holdStarted = Time.realtimeSinceStartup; heldKey = holdKey; }
                     if (Time.realtimeSinceStartup - holdStarted < limit)
                     {
                         // 기다리는 동안 도는 프레임이 쓴 난수를 되돌려, 대기가 풀리는 프레임이 기록과 같은 상태에서 시작하게 한다.
                         RandomStates.Restore(_manifest.RandomStates, Frame - 1);
-                        CaptureVerify.Held(waitingFor);
-                        CaptureClock.Hold();
-                        NetworkTape.Hold();
-                        Time.captureDeltaTime = 1e-5f;
+                        CaptureVerify.Held(Frame, waitingFor);
+                        // 기다리는 동안에는 세션 시계로 끝나는 것(Task.Delay, 테이프 응답)도 멈춰 있다 — 로딩만 늦은 것이면 풀린 뒤 녹화와 같은 프레임에 이어진다.
+                        // 로딩(씬·서버 응답 말고)을 기다린 지 오래면 그 시계들과 로딩 코드의 시계를 돌려, 서로 기다리다 멈춘 흐름이 풀리게 한다.
+                        if (server == null && !waitingFor.StartsWith("scene:") && Time.realtimeSinceStartup - holdStarted > LoadClockAfterSeconds)
+                        {
+                            if (!_loadClockTicked)
+                            {
+                                _loadClockTicked = true;
+                                CaptureVerify.LoadClockTicked(Frame, waitingFor);
+                            }
+                            CaptureClock.TickLoadClock();
+                            CaptureClock.Stall();
+                            NetworkTape.Stall();
+                        }
+                        Time.captureDeltaTime = HoldDeltaTime;
+                        _heldTime += HoldDeltaTime;
                         continue;
                     }
                     if (server != null)
@@ -390,7 +436,7 @@ namespace CookApps.LocaleCapture
                     }
                     else
                     {
-                        CaptureVerify.Add(Frame, "로딩", $"'{waitingFor}' 이 {limit}초 안에 끝나지 않았다 — 기록 때와 다른 로딩");
+                        CaptureVerify.LoadTimedOut(Frame, waitingFor, limit);
                         nextMarker++;
                         // 녹화 언어가 아닌 패스에서 게임이 언어 시스템 초기화를 기다리다 서면 로딩 신호가 더 안 온다 — 초기화를 끝내 준다.
                         if (!string.IsNullOrEmpty(Request.Locale) && LocalizationBridge.FinishPendingInitialization())
@@ -407,6 +453,7 @@ namespace CookApps.LocaleCapture
                 CaptureVerify.CheckState(Frame, _manifest.RandomStates);
                 TapProbe.Check(Frame, _replayTaps);
                 UiTrace.Check(Frame, _replayUi);
+                HitTrace.Check(Frame, _replayHits);
                 CaptureVerify.FrameTime(FrameMs());
                 Advance();
                 // 다음에 그릴 프레임(Frame)이 START 직전이면 본래 크기로 돌려, START 프레임부터 온전히 찍힌다.
@@ -414,7 +461,16 @@ namespace CookApps.LocaleCapture
                 while (_nextToggle < _manifest.Toggles.Count && _manifest.Toggles[_nextToggle].Frame <= Frame)
                     InspectorToggles.Apply(_manifest.Toggles[_nextToggle++]);
                 if (Frame < TotalFrames) _player.QueueFrame(Frame);
-                Time.captureDeltaTime = 1f / _manifest.Fps;
+                // 로딩 대기 프레임에서 흐른 시간만큼 다음 프레임을 짧게 해 되돌린다. 그대로 두면 엔진 시간(Time.time)이 녹화보다 그만큼 앞서,
+                // "Time.time + 1초" 처럼 프레임 경계에 딱 걸리는 게임 타이머가 반올림 차이로 한 프레임 일찍·늦게 끝날 수 있다.
+                float step = 1f / _manifest.Fps;
+                if (_heldTime > 0f)
+                {
+                    float back = Mathf.Min(_heldTime, step * 0.5f);
+                    step -= back;
+                    _heldTime -= back;
+                }
+                Time.captureDeltaTime = step;
                 Flush(false);
             }
             if (!_finished) Finish(null, true);
@@ -522,29 +578,41 @@ namespace CookApps.LocaleCapture
         private void Update()
         {
             if (_finished) return;
+            NetworkTape.ReleaseOffMain();   // 작업 스레드에서 보낸 요청의 응답 — 그 이어받기가 메인 스레드로 돌아오기 전에(아래) 풀어 둔다
+            ThreadGate.Release(Frame);   // 작업 스레드에서 돌아온 이어받기
             CaptureClock.ReleaseDelays(false);
-            if (!IsRecording) NetworkTape.Release();
+            NetworkTape.Release();   // 기록 때도 응답을 여기서 넘긴다(재생과 같은 자리)
         }
+
+        // 아래 둘은 재생 프레임마다 묻는 값이다 — 동기 지점(끝난 로딩마다 하나)이 수천 개일 수 있어 한 번만 계산해 둔다.
+        private int _enforceLocaleFrom = -1;
+        private int[] _nextSceneFrame;   // [i] = i 번째 동기 지점부터 처음 나오는 씬 전환의 프레임(없으면 0)
 
         private int EnforceLocaleFrom
         {
             get
             {
+                if (_enforceLocaleFrom >= 0) return _enforceLocaleFrom;
                 int lastScene = 0;
                 foreach (ReplayManifest.Marker m in _manifest.Markers)
-                    if (m.Name.StartsWith("scene:")) lastScene = Math.Max(lastScene, m.Frame);
-                return Math.Max(_manifest.VideoStartFrame, lastScene + 60);
+                    if (m.Name.StartsWith("scene:", StringComparison.Ordinal)) lastScene = Math.Max(lastScene, m.Frame);
+                return _enforceLocaleFrom = Math.Max(_manifest.VideoStartFrame, lastScene + 60);
             }
         }
 
         private int NextSceneFrame(int from)
         {
-            for (int i = from; i < _manifest.Markers.Count; i++)
-                if (_manifest.Markers[i].Name.StartsWith("scene:")) return _manifest.Markers[i].Frame;
-            return 0;   // 남은 씬 전환이 없으면 미루지 않는다
+            if (_nextSceneFrame == null)
+            {
+                List<ReplayManifest.Marker> markers = _manifest.Markers;
+                _nextSceneFrame = new int[markers.Count + 1];   // 맨 끝 = 0: 남은 씬 전환이 없으면 미루지 않는다
+                for (int i = markers.Count - 1; i >= 0; i--)
+                    _nextSceneFrame[i] = markers[i].Name.StartsWith("scene:", StringComparison.Ordinal) ? markers[i].Frame : _nextSceneFrame[i + 1];
+            }
+            return _nextSceneFrame[Math.Min(Math.Max(from, 0), _nextSceneFrame.Length - 1)];
         }
 
-        private static bool IsSceneSignal(string marker) => marker.StartsWith("scene:") || marker == "async:AsyncOperation";
+        private static bool IsSceneSignal(string marker) => marker.StartsWith("scene:", StringComparison.Ordinal) || marker == "async:AsyncOperation";
 
         // ── 프레임 페이싱·입력 ─────────────────────────────────────────────────
 
@@ -652,6 +720,7 @@ namespace CookApps.LocaleCapture
             catch (Exception e) { Debug.LogException(e); error ??= e.Message; completed = false; }
             AddressablesProbe.Unregister();
             CaptureMarkers.Clear();
+            ThreadGate.End();
             CaptureClock.End();
             RestoreUiCulture();
             CaptureScreen.End();

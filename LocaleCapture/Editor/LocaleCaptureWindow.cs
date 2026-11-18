@@ -99,24 +99,32 @@ namespace CookApps.LocaleCapture.Editor
         // 맨 위 상태 줄: 점검에 걸린 게 있으면 그것을, 통과면 최근 녹화 결과를 보여 준다.
         private void DrawStatus()
         {
-            if (_health != null && _health.Count > 0)
+            bool warned = _health != null && _health.Count > 0;
+            if (warned)
             {
                 Box("확인 필요 — 녹화가 실패하거나 언어마다 다른 영상이 나올 수 있다\n- " + string.Join("\n- ", _health), MessageType.Warning);
                 if (GUI.Button(Row(" "), "다시 점검", EditorStyles.miniButton)) RunHealthCheck();
-                return;
             }
+            // 점검에 걸린 게 있어도 최근 녹화 결과는 그 아래에 그대로 보여 준다(결과와 보고 버튼이 가려지지 않게).
             string message = CaptureDirector.Message;
-            if (string.IsNullOrEmpty(message)) { Box("점검 통과", MessageType.Info); return; }
-            // 성공 = 끝까지 녹화됐고 녹화와 다르게 재생된 곳이 없음. 자세한 내용은 콘솔·verify 폴더.
+            if (string.IsNullOrEmpty(message)) { if (!warned) Box("점검 통과", MessageType.Info); return; }
+            if (message == "실패: " + CaptureDirector.Cancelled) { Box("최근 녹화 취소됨", MessageType.Info); DrawRetry(); return; }   // 직접 취소한 것은 실패가 아니다
+            // 성공 = 끝까지 녹화됐고, 녹화 시작 이후 녹화와 프레임 하나 다르게 재생된 곳이 없음. 자세한 내용은 콘솔·verify 폴더.
             bool failed = !message.StartsWith("완료") || CaptureDirector.Reports.Any(r => r.StartsWith("다름"));
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
-            // 성공이지만 눈으로 한 번 볼 곳(누른 대상이 녹화와 달랐으나 플레이는 같게 흘러감)은 작은 글씨로. 자세한 내용은 콘솔.
-            if (!failed)
-                foreach (string caution in CaptureDirector.Reports.Where(r => r.StartsWith("주의")))
-                {
-                    int cut = caution.IndexOf(", 처음", StringComparison.Ordinal);
-                    Note("⚠ " + (cut < 0 ? caution : caution.Substring(0, cut)).Substring(5) + " — 플레이는 녹화와 같게 흘러갔다. 영상을 한 번 확인한다");
-                }
+            // 중단된 까닭(인코딩 실패·기록 없음 등)은 결과 줄에 없으므로 여기서 보여 준다.
+            if (message.StartsWith("실패: "))
+            {
+                string reason = message.Substring(4);
+                Note("⚠ " + (reason.Length <= 220 ? reason : reason.Substring(0, 220) + "…"));
+            }
+            // 실패면 어디서부터 달라졌는지("다름"), 성공이면 눈으로 한 번 볼 곳("주의")을 작은 글씨로. 자세한 내용은 콘솔과 보고서.
+            foreach (string line in CaptureDirector.Reports.Where(r => r.StartsWith(failed ? "다름" : "주의")).Take(4))
+            {
+                string text = line.Substring(5);   // "다름 — "·"주의 — " 를 뗀다
+                Note("⚠ " + (text.Length <= 220 ? text : text.Substring(0, 220) + "…"));
+            }
+            if (failed && DrawRetry()) return;
             string report = failed ? IssueReport.LastPath : null;
             if (report == null) return;
             // 전송 결과는 라벨 칸(150px)에 안 들어가므로 상자 한 줄로 따로, 버튼은 그 아래.
@@ -130,6 +138,23 @@ namespace CookApps.LocaleCapture.Editor
             using (new EditorGUI.DisabledScope(IssueReport.Sending))
                 if (GUI.Button(Row(" "), "GitHub 이슈 보내기", EditorStyles.miniButton)) IssueReport.Send(report);
             if (IssueReport.Sending) Repaint();
+        }
+
+        // 최근 녹화에서 녹화와 같게 나오지 못한 것(어긋난 언어, 중단·취소로 못 뽑은 언어)만 같은 기록으로 다시 뽑는 버튼.
+        // 다시 플레이하지 않아도 되고, 맞게 나온 언어의 영상은 그대로 둔다. 눌렀으면 true.
+        private bool DrawRetry()
+        {
+            List<string> targets = CaptureDirector.RetryTargets;
+            if (targets.Count == 0) return false;
+            var label = new GUIContent("다시 뽑기 — " + string.Join(", ", targets),
+                "다시 플레이하지 않고, 최근 녹화에서 맞게 나오지 못한 것만 같은 설정으로 다시 뽑는다. 맞게 나온 언어의 영상은 그대로 둔다.");
+            using (new EditorGUI.DisabledScope(EditorApplication.isPlaying))
+            {
+                if (!GUI.Button(Row(" "), label, EditorStyles.miniButton)) return false;
+            }
+            try { CaptureDirector.RetryFailed(); }
+            catch (Exception e) { EditorUtility.DisplayDialog("다시 뽑기", e.Message, "확인"); }
+            return true;
         }
 
         // Unity Recorder 처럼: 위에 녹화 버튼·상태 막대, 아래에 Description / Input / Output Format / Output File 구획.
@@ -197,7 +222,7 @@ namespace CookApps.LocaleCapture.Editor
                     Directory.CreateDirectory(ResolveDir());
                     EditorUtility.RevealInFinder(ResolveDir());
                 }
-                EditorGUI.LabelField(Row(" "), $"{_name}_<시각>/{_name}_<언어>.{_settings.Extension}", EditorStyles.miniLabel);
+                EditorGUI.LabelField(Row(" "), $"{_name}_<시각>/{_name}_<시각>_<언어>.{_settings.Extension}", EditorStyles.miniLabel);
             }
 
             GUILayout.Space(10);

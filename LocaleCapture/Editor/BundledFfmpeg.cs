@@ -50,11 +50,12 @@ namespace CookApps.LocaleCapture.Editor
         public static bool Available => Path != null;
 
         // 동기 실행. 실패하면 stderr 를 돌려준다(성공은 빈 문자열).
-        public static string Run(string args, Action<string> onStderrLine = null)
+        public static string Run(string args, Action<string> onStderrLine = null, string workingDirectory = null)
         {
             using (var p = Process.Start(new ProcessStartInfo(Path, args)
                    {
                        UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
+                       WorkingDirectory = workingDirectory ?? "",
                    }))
             {
                 var err = new System.Text.StringBuilder();

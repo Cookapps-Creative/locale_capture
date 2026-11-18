@@ -20,19 +20,52 @@ namespace CookApps.LocaleCapture
         }
 
         private static readonly List<RaycastResult> _hits = new List<RaycastResult>();
+        private static int _latchedFrame = -1;
+        private static Vector2 _latchedPosition;
+        private static string _latchedDevice;
+
+        // 재생에서 Unity 프레임마다 부른다. 로딩 대기로 세션 프레임 하나가 여러 Unity 프레임에 걸치면, 눌림은 그 첫 Unity 프레임에만
+        // 보이고 Check 는 대기가 풀린 뒤(나중 Unity 프레임)에 돈다 — 눌린 것을 붙잡아 두지 않으면 "안 눌림" 으로 잘못 나온다.
+        internal static void Latch(int frame)
+        {
+            if (_latchedFrame == frame) return;   // 이 세션 프레임의 첫 눌림을 지킨다
+            if (!Pressed(out Vector2 position, out string device)) return;
+            _latchedFrame = frame;
+            _latchedPosition = position;
+            _latchedDevice = device;
+        }
+
+        internal static void Reset() => _latchedFrame = -1;
 
         // 프레임 끝에 부른다. 이번 프레임에 눌린 포인터(마우스·터치)마다 하나.
         internal static void Check(int frame, List<Tap> into)
         {
             if (into == null) return;
-            foreach (InputDevice device in InputSystem.devices)
+            bool latched = _latchedFrame == frame;
+            _latchedFrame = -1;
+            if (!Pressed(out Vector2 position, out string device))
             {
-                if (!(device is Pointer pointer) || !device.enabled || !pointer.press.wasPressedThisFrame) continue;
-                Vector2 position = pointer.position.ReadValue();
-                string target = Hit(position, out string under, out string handler);
-                into.Add(new Tap { Frame = frame, Target = target, Handler = handler, Detail = $"({position.x:F0},{position.y:F0}) {device.name} 아래: {under}" });
-                return;   // 한 프레임에 하나면 충분하다(터치 시뮬레이션은 마우스와 터치가 함께 눌린다)
+                if (!latched) return;
+                position = _latchedPosition;   // 대기 프레임에 눌렸다 — 대상은 지금(대기가 풀린 뒤, 기록과 같은 시점) 가린다
+                device = _latchedDevice;
             }
+            string target = Hit(position, out string under, out string handler);
+            into.Add(new Tap { Frame = frame, Target = target, Handler = handler, Detail = $"({position.x:F0},{position.y:F0}) {device} 아래: {under}" });
+        }
+
+        // 이번 Unity 프레임에 눌린 포인터. 한 프레임에 하나면 충분하다(터치 시뮬레이션은 마우스와 터치가 함께 눌린다).
+        private static bool Pressed(out Vector2 position, out string device)
+        {
+            foreach (InputDevice d in InputSystem.devices)
+            {
+                if (!(d is Pointer pointer) || !d.enabled || !pointer.press.wasPressedThisFrame) continue;
+                position = pointer.position.ReadValue();
+                device = d.name;
+                return true;
+            }
+            position = default;
+            device = null;
+            return false;
         }
 
         private static string Hit(Vector2 position, out string under, out string handler)
@@ -61,15 +94,17 @@ namespace CookApps.LocaleCapture
         }
 
         // 아래에서 세 단계까지 "부모/자식/대상" (복제 표시는 뗀다)
-        private static string PathOf(Transform t)
+        internal static string PathOf(Transform t)
         {
             var parts = new List<string>();
             for (int i = 0; i < 3 && t != null; i++, t = t.parent) parts.Insert(0, t.name.Replace("(Clone)", ""));
             return string.Join("/", parts);
         }
 
-        // 기록과 재생의 누른 대상을 프레임별로 맞춰 본다. 다른 곳들을 "프레임 녹화[..] 재생[..]" 로.
-        internal static List<string> Compare(List<Tap> recorded, List<Tap> replayed)
+        // 기록과 재생의 누른 대상을 프레임별로 맞춰 본다. 다른 곳들을 "프레임 녹화[..] 재생[..]" 로, 그 프레임은 frames 에.
+        // handlersRecorded: 기록에 "입력을 받는 대상" 이 남아 있는가. 없으면(이전 기록) 맨 위 대상으로만 가려, 언어마다 문구가
+        // 길어져 다른 그래픽이 맞은 것도 다르다고 나올 수 있다.
+        internal static List<string> Compare(List<Tap> recorded, List<Tap> replayed, List<int> frames, bool handlersRecorded)
         {
             var issues = new List<string>();
             if (recorded == null || replayed == null) return issues;
@@ -78,12 +113,19 @@ namespace CookApps.LocaleCapture
             foreach (Tap t in recorded)
             {
                 bool found = byFrame.TryGetValue(t.Frame, out Tap got);
-                // 양쪽 다 입력 받는 대상을 남겼으면 그것으로, 아니면(이전 기록·빈 곳) 맨 위 대상으로 비교한다.
-                bool byHandler = found && !string.IsNullOrEmpty(t.Handler) && !string.IsNullOrEmpty(got.Handler);
-                if (!found || (byHandler ? got.Handler != t.Handler : got.Target != t.Target))
-                    issues.Add($"{t.Frame}: 녹화 [{t.Target}] {t.Detail} | 재생 [{(found ? got.Target : "안 눌림")}] {(found ? got.Detail : "")}");
+                if (found && Same(t, got, handlersRecorded)) continue;
+                issues.Add($"{t.Frame}: 녹화 [{t.Target}] {t.Detail} | 재생 [{(found ? got.Target : "안 눌림")}] {(found ? got.Detail : "")}");
+                frames?.Add(t.Frame);
             }
             return issues;
+        }
+
+        private static bool Same(Tap recorded, Tap replayed, bool handlersRecorded)
+        {
+            if (!handlersRecorded) return recorded.Target == replayed.Target;
+            bool a = string.IsNullOrEmpty(recorded.Handler), b = string.IsNullOrEmpty(replayed.Handler);
+            if (a != b) return false;                                    // 한쪽은 UI 를 맞췄고 한쪽은 빈 곳
+            return a ? recorded.Target == replayed.Target : recorded.Handler == replayed.Handler;
         }
     }
 }

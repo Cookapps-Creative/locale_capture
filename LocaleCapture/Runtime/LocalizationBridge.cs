@@ -27,15 +27,36 @@ namespace CookApps.LocaleCapture
 
         public static bool Available => UnitySettings != null || I2 != null;
 
-        // 지금 선택 언어 코드. 모르면 null. 처음 부르면 패키지 초기화가 시작될 수 있으니 게임이 초기화한 뒤에 부른다.
-        public static string SelectedCode()
+        // 지금 선택 언어 코드. 모르면 null.
+        // Unity Localization 의 SelectedLocale 은 읽기만 해도 초기화를 시작하고, 진행 중이면 그 자리에서 끝날 때까지 기다린다(WaitForCompletion) —
+        // 걸려 있던 언어 테이블·에셋 로딩이 그 프레임에 한꺼번에 끝나 게임 흐름이 달라진다. 그래서 force 가 아니면 게임이 초기화를 끝낸 뒤에만 읽는다.
+        // force: 세션 밖(기록을 저장할 때 등)에서만 쓴다.
+        public static string SelectedCode(bool force = false)
         {
             try
             {
-                if (UnitySettings != null) return CodeOf(UnitySettings.GetProperty("SelectedLocale", Static)?.GetValue(null));
+                if (UnitySettings != null)
+                {
+                    if (!force && !UnityInitialized()) return null;
+                    return CodeOf(UnitySettings.GetProperty("SelectedLocale", Static)?.GetValue(null));
+                }
                 return I2?.GetProperty("CurrentLanguageCode", Static)?.GetValue(null) as string;
             }
             catch { return null; }
+        }
+
+        // Unity Localization 초기화가 이미 끝났는가. 초기화를 시작하지도 기다리지도 않고 본다.
+        private static bool UnityInitialized()
+        {
+            if (!(UnitySettings.GetProperty("HasSettings", Static)?.GetValue(null) is bool has) || !has) return false;
+            object settings = UnitySettings.GetMethod("GetInstanceDontCreateDefault", Static)?.Invoke(null, null);
+            FieldInfo field = UnitySettings.GetField("m_InitializingOperationHandle", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (settings == null || field == null) return false;
+            object handle = field.GetValue(settings);
+            if (handle == null) return false;
+            Type type = handle.GetType();
+            if (!(type.GetMethod("IsValid")?.Invoke(handle, null) is bool valid) || !valid) return false;
+            return type.GetProperty("IsDone")?.GetValue(handle) is bool done && done;
         }
 
         // 사용 가능한 언어 중 code 로 바꾼다. 성공하면 true.

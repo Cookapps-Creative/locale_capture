@@ -168,6 +168,12 @@ namespace CookApps.LocaleCapture.Editor
             if (t.Error != null || !File.Exists(t.Video))
             {
                 Debug.LogError($"[LocaleCapture] {t.Locale} 영상 인코딩 실패: {t.Error}\n{Tail(stderr)}");
+                // 작은 화면 시험은 통과했어도 실제 크기에서 GPU 인코더가 실패할 수 있다 — 다음부터는 소프트웨어 인코더를 쓴다.
+                if (_encoder != null && _encoder.StartsWith("h264_") )
+                {
+                    Remember("libx264");
+                    Debug.LogWarning($"[LocaleCapture] GPU 인코더({_encoder})가 실패해 다음 녹화부터 소프트웨어 인코더(libx264)를 쓴다");
+                }
                 return;
             }
             if (!string.IsNullOrEmpty(stderr)) Debug.LogWarning($"[LocaleCapture] ffmpeg({t.Locale}): {Tail(stderr)}");
@@ -178,7 +184,7 @@ namespace CookApps.LocaleCapture.Editor
                 return;
             }
             string audio = _settings.Format == VideoFormat.WebM ? "-c:a libopus -b:a 160k" : "-c:a aac -b:a 192k -movflags +faststart";
-            string error = BundledFfmpeg.Run($"-hide_banner -loglevel error -y -i \"{t.Video}\" -i \"{t.Audio}\" -map 0:v -map 1:a -c:v copy {audio} -shortest \"{t.Final}\"");
+            string error = BundledFfmpeg.Run($"-hide_banner -loglevel error -y -i \"{t.Video}\" -i \"{t.Audio}\" -map 0:v -map 1:a -c:v copy {audio} -af apad -shortest \"{t.Final}\"");   // 소리가 영상보다 짧아도 영상 프레임을 자르지 않는다(소리를 무음으로 늘려 영상 끝에서 끊는다)
             if (!string.IsNullOrEmpty(error) || !File.Exists(t.Final))
             {
                 Debug.LogError($"[LocaleCapture] {t.Locale} 영상·소리 합치기 실패(영상만 남긴다): {error}");
@@ -204,9 +210,20 @@ namespace CookApps.LocaleCapture.Editor
         public static string H264Encoder()
         {
             if (_h264 != null) return _h264;
+            // 패스마다 도메인이 다시 올라와 정적 필드가 비므로 에디터를 켜 둔 동안은 SessionState 에 둔다 — 패스마다 ffmpeg 를 세 번까지 띄워 시험하지 않게.
+            string remembered = UnityEditor.SessionState.GetString(EncoderKey, "");
+            if (!string.IsNullOrEmpty(remembered)) return _h264 = remembered;
             foreach (string encoder in new[] { "h264_nvenc", "h264_amf", "h264_qsv" })
-                if (Works(encoder)) { Debug.Log($"[LocaleCapture] GPU 인코더 {encoder} 사용"); return _h264 = encoder; }
-            return _h264 = "libx264";
+                if (Works(encoder)) { Debug.Log($"[LocaleCapture] GPU 인코더 {encoder} 사용"); return Remember(encoder); }
+            return Remember("libx264");
+        }
+
+        private const string EncoderKey = "LocaleCapture.H264Encoder";
+
+        private static string Remember(string encoder)
+        {
+            UnityEditor.SessionState.SetString(EncoderKey, encoder);
+            return _h264 = encoder;
         }
 
         private static bool Works(string encoder) =>

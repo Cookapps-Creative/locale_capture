@@ -4,8 +4,8 @@ using UnityEngine;
 
 namespace CookApps.LocaleCapture
 {
-    // UI 화면(최상위 Canvas)이 열리고 닫힌 프레임을 남긴다. 기록과 재생을 비교해, 같은 입력인데 팝업이 늦게·일찍 뜬 곳을
-    // 바로 보여 준다(누른 대상 비교는 누른 순간만 본다).
+    // UI 화면(최상위 Canvas)이 열리고 닫힌 프레임을 남긴다. 기록과 재생을 비교해(CaptureVerify), 같은 입력인데 팝업이
+    // 늦게·일찍 뜬 곳을 바로 보여 준다(누른 대상 비교는 누른 순간만 본다).
     public static class UiTrace
     {
         [Serializable]
@@ -36,29 +36,6 @@ namespace CookApps.LocaleCapture
                 into.Add(new Event { Frame = frame, Name = name, Open = false });
                 return true;
             });
-        }
-
-        // 같은 화면의 같은 순번 열림·닫힘끼리 맞춰, 프레임이 다른 첫 곳들을 "이름 열림: 녹화 F 재생 G" 로.
-        internal static List<string> Compare(List<Event> recorded, List<Event> replayed)
-        {
-            var issues = new List<string>();
-            if (recorded == null || replayed == null) return issues;
-            var queues = new Dictionary<string, Queue<int>>();
-            foreach (Event e in replayed)
-            {
-                string key = e.Name + (e.Open ? "+" : "-");
-                if (!queues.TryGetValue(key, out Queue<int> q)) queues[key] = q = new Queue<int>();
-                q.Enqueue(e.Frame);
-            }
-            foreach (Event e in recorded)
-            {
-                string key = e.Name + (e.Open ? "+" : "-");
-                string what = $"{e.Name} {(e.Open ? "열림" : "닫힘")}";
-                if (!queues.TryGetValue(key, out Queue<int> q) || q.Count == 0) { issues.Add($"{what}: 녹화 {e.Frame}, 재생 없음"); continue; }
-                int got = q.Dequeue();
-                if (Math.Abs(got - e.Frame) > 1) issues.Add($"{what}: 녹화 {e.Frame}, 재생 {got}");
-            }
-            return issues;
         }
     }
 }

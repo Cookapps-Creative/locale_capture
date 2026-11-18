@@ -21,7 +21,7 @@ namespace CookApps.LocaleCapture.Editor
         private const string Label = "recording-failure";
         private const string Tag = "LocaleCapture";
         private const string LastKey = "LocaleCapture.LastIssueReport";
-        private const int MaxLogs = 40, MaxIssuesPerPass = 15, MaxMismatches = 5, MaxUrlBody = 6000;
+        private const int MaxLogs = 40, MaxIssuesPerPass = 15, MaxMismatches = 5, MaxDifferences = 15, MaxUrlBody = 6000;
         private static readonly List<string> _logs = new List<string>();
         private static UnityWebRequest _sending;
         private static string ReportsDir => LocaleCaptureWindow.SavedOutputDir;
@@ -88,14 +88,30 @@ namespace CookApps.LocaleCapture.Editor
                 CaptureVerify.Report r;
                 try { r = JsonUtility.FromJson<CaptureVerify.Report>(File.ReadAllText(file)); } catch { continue; }
                 if (r == null) continue;
-                sb.AppendLine($"### {r.Pass} — {(r.Ok ? "일치" : "다름")}, {r.Frames}프레임, 서버 재생 {r.ServerReplayed}·실서버 {r.ServerLive}·없음 {r.ServerMissed}, " +
+                string verdict = r.DivergedFrame >= 0 ? "다름" : r.EarlyFrame >= 0 || r.TapMismatches.Count > 0 ? "녹화 시작 이후 일치(참고 있음)" : "일치";
+                string fileName = Path.GetFileName(file);
+                int attempt = fileName.LastIndexOf(".try", StringComparison.OrdinalIgnoreCase);
+                string pass = fileName.EndsWith(".fast.json", StringComparison.OrdinalIgnoreCase) ? r.Pass + " (빠른 재생 — 이 뒤 실제 속도로 다시 뽑음)"
+                    : attempt >= 0 ? r.Pass + $" (실제 속도 재생 — 이 뒤 다시 뽑음, {fileName.Substring(attempt + 1, fileName.Length - attempt - 6)})"
+                    : r.Pass;
+                sb.AppendLine($"### {pass} — {verdict}, {r.Frames}프레임(녹화 시작 {r.VideoStartFrame}), 서버 재생 {r.ServerReplayed}·실서버 {r.ServerLive}·없음 {r.ServerMissed}, " +
                               $"로딩 대기 {r.HeldFrames}프레임, 난수 어긋남 {r.StateMismatchFrames}프레임");
-                if (r.Shifts.Count > 0) sb.AppendLine($"- 로딩 시점 차이: {string.Join(", ", r.Shifts.Take(MaxMismatches))}");
-                foreach (string m in r.UiMismatches.Take(MaxMismatches)) sb.AppendLine($"- 화면: {m}");
-                foreach (string m in r.TapMismatches.Take(MaxMismatches)) sb.AppendLine($"- 터치: {Shorten(m, 220)}");
-                if (r.TapMismatches.Count > MaxMismatches) sb.AppendLine($"- 터치 불일치 {r.TapMismatches.Count}건 중 {MaxMismatches}건만 표시");
-                foreach (CaptureVerify.Issue i in r.Issues.Take(MaxIssuesPerPass)) sb.AppendLine($"- {i.Frame}: [{i.Kind}] {Shorten(i.Detail, 200)}");
-                if (r.Issues.Count > MaxIssuesPerPass) sb.AppendLine($"- 이슈 {r.Issues.Count}건 중 {MaxIssuesPerPass}건만 표시");
+                if (r.DivergedFrame >= 0) sb.AppendLine($"- **처음 달라진 곳**: 프레임 {r.DivergedFrame} [{r.DivergedKind}] {Shorten(r.DivergedDetail, 300)}");
+                if (r.EarlyFrame >= 0) sb.AppendLine($"- 녹화 시작 전 처음 달라진 곳: 프레임 {r.EarlyFrame} [{r.EarlyKind}] {Shorten(r.EarlyDetail, 300)}");
+                if (r.Differences.Count > 0)
+                {
+                    sb.AppendLine($"- 달라진 곳(프레임 순, 로딩 시점 차이 포함) — 로딩 제외 모두 {r.DifferenceCount}건:");
+                    foreach (string d in r.Differences.Take(MaxDifferences)) sb.AppendLine($"  - {Shorten(d, 240)}");
+                }
+                if (r.TraceVersion == 0)
+                {
+                    sb.AppendLine("- 이전 형식 기록이라 입력 받는 UI·난수 생성 프레임은 비교하지 못했다");
+                    foreach (string m in r.TapMismatches.Take(MaxMismatches)) sb.AppendLine($"- 터치(맨 위 그래픽 기준): {Shorten(m, 220)}");
+                }
+                // 달라진 곳 목록에 이미 든 분류는 빼고, 그 밖의 기록(기록에 없는 서버 요청 등)만
+                var others = r.Issues.Where(i => i.Kind != "터치" && i.Kind != "화면" && i.Kind != "상태" && i.Kind != "로딩").ToList();
+                foreach (CaptureVerify.Issue i in others.Take(MaxIssuesPerPass)) sb.AppendLine($"- {i.Frame}: [{i.Kind}] {Shorten(i.Detail, 200)}");
+                if (others.Count > MaxIssuesPerPass) sb.AppendLine($"- 그 밖의 기록 {others.Count}건 중 {MaxIssuesPerPass}건만 표시");
             }
             sb.AppendLine();
         }

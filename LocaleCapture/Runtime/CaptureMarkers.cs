@@ -16,6 +16,26 @@ namespace CookApps.LocaleCapture
             lock (_hits) _hits.Add(name);
         }
 
+        // 끝난 로딩의 이름(진단용). 맞추는 데는 쓰지 않는다 — 언어마다 대상이 다르다.
+        private static readonly List<string> _loaded = new List<string>();
+
+        public static void Loaded(string name)
+        {
+            if (!CaptureClock.Active || string.IsNullOrEmpty(name)) return;
+            lock (_loaded) _loaded.Add(name);
+        }
+
+        internal static void DrainLoaded(int frame, List<ReplayManifest.Marker> into, int max)
+        {
+            lock (_loaded)
+            {
+                if (into != null)
+                    foreach (string name in _loaded)
+                        if (into.Count < max) into.Add(new ReplayManifest.Marker { Frame = frame, Name = name });
+                _loaded.Clear();
+            }
+        }
+
         internal static void Drain(List<string> into)
         {
             lock (_hits)
@@ -28,6 +48,7 @@ namespace CookApps.LocaleCapture
         internal static void Clear()
         {
             lock (_hits) _hits.Clear();
+            lock (_loaded) _loaded.Clear();
             ReleaseActivation();
             GateActivation = false;
             _sceneLoads.Clear();
