@@ -686,7 +686,7 @@ namespace CookApps.LocaleCapture.Editor
             Save();
             if (success) Debug.Log("[LocaleCapture] 완료 — " + string.Join(" · ", _state.Reports));
             else Debug.LogWarning("[LocaleCapture] " + _state.Message);
-            // 실패(중단)했거나 녹화와 다르게 재생된 테이크는 보고서로 남긴다 — 창의 'GitHub 이슈로 보고' 가 쓴다.
+            // 실패(중단)했거나 녹화와 다르게 재생된 테이크는 보고서로 남긴다(Output File 의 Path 폴더).
             // 사용자가 직접 취소한 것은 문제가 아니므로 보고서를 만들지 않는다.
             if ((!success && error != Cancelled) || _state.Reports.Any(r => r.StartsWith("다름")))
             {

@@ -124,20 +124,7 @@ namespace CookApps.LocaleCapture.Editor
                 string text = line.Substring(5);   // "다름 — "·"주의 — " 를 뗀다
                 Note("⚠ " + (text.Length <= 220 ? text : text.Substring(0, 220) + "…"));
             }
-            if (failed && DrawRetry()) return;
-            string report = failed ? IssueReport.LastPath : null;
-            if (report == null) return;
-            // 전송 결과는 라벨 칸(150px)에 안 들어가므로 상자 한 줄로 따로, 버튼은 그 아래.
-            if (!string.IsNullOrEmpty(IssueReport.Status))
-                Box(IssueReport.Status, IssueReport.SentUrl != null ? MessageType.Info : IssueReport.Sending ? MessageType.None : MessageType.Warning);
-            if (IssueReport.SentUrl != null)
-            {
-                if (GUI.Button(Row(" "), "이슈 열기", EditorStyles.miniButton)) Application.OpenURL(IssueReport.SentUrl);
-                return;
-            }
-            using (new EditorGUI.DisabledScope(IssueReport.Sending))
-                if (GUI.Button(Row(" "), "GitHub 이슈 보내기", EditorStyles.miniButton)) IssueReport.Send(report);
-            if (IssueReport.Sending) Repaint();
+            if (failed) DrawRetry();
         }
 
         // 최근 녹화에서 녹화와 같게 나오지 못한 것(어긋난 언어, 중단·취소로 못 뽑은 언어)만 같은 기록으로 다시 뽑는 버튼.
