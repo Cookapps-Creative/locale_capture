@@ -52,6 +52,7 @@ namespace CookApps.LocaleCapture.Editor
             if (_settings.Format == VideoFormat.MOV) _settings.Format = VideoFormat.MP4; // 내장 인코더는 MP4·WebM 만
             LoadLocales();
             RunHealthCheck();
+            ToolUpdate.AutoCheck();
             EditorApplication.update += Tick;
         }
 
@@ -144,6 +145,32 @@ namespace CookApps.LocaleCapture.Editor
             return true;
         }
 
+        // 새 버전이 있을 때만 상태 줄 아래에 알린다. 평소에는 맨 아래 Version 줄에만 보인다.
+        private void DrawUpdateNotice()
+        {
+            ToolUpdate.State state = ToolUpdate.Status;
+            if (state != ToolUpdate.State.Available && state != ToolUpdate.State.Downloading) return;
+            Box(ToolUpdate.Notice, MessageType.Info);
+            using (new EditorGUI.DisabledScope(ToolUpdate.Working || !ToolUpdate.CanRun))
+            {
+                var label = new GUIContent(state == ToolUpdate.State.Downloading ? "받는 중…" : "업데이트", ToolUpdate.Detail);
+                if (GUI.Button(Row(" "), label, EditorStyles.miniButton)) ToolUpdate.Run();
+            }
+        }
+
+        // 맨 아래: 설치된 버전과 업데이트 확인.
+        private static void DrawVersion()
+        {
+            Section("Version");
+            Rect row = Row("Installed");
+            const float button = 96, gap = 4;
+            EditorGUI.LabelField(new Rect(row.x, row.y, row.width - button - gap, row.height), new GUIContent(ToolUpdate.Summary, ToolUpdate.Detail));
+            using (new EditorGUI.DisabledScope(ToolUpdate.Working || !ToolUpdate.CanRun))
+            {
+                if (GUI.Button(new Rect(row.xMax - button, row.y, button, row.height), "업데이트 확인")) ToolUpdate.Run();
+            }
+        }
+
         // Unity Recorder 처럼: 위에 녹화 버튼·상태 막대, 아래에 Description / Input / Output Format / Output File 구획.
         // 줄은 모두 Row() 한 곳에서 좌표를 정해(라벨 칸 고정, 같은 좌우 여백) EditorGUI 로 그린다 — 자동 배치 필드는 스타일마다 여백이 달라 들쭉날쭉하다.
         private const float LabelWidth = 150, Pad = 10, LabelIndent = 10, BottomBarHeight = 40;
@@ -162,6 +189,7 @@ namespace CookApps.LocaleCapture.Editor
             {
                 GUILayout.Space(8);
                 DrawStatus();
+                DrawUpdateNotice();
                 DrawDescription();
             }
 
@@ -211,6 +239,7 @@ namespace CookApps.LocaleCapture.Editor
                 }
                 EditorGUI.LabelField(Row(" "), $"{_name}_<시각>/{_name}_<시각>_<언어>.{_settings.Extension}", EditorStyles.miniLabel);
             }
+            if (!busy) DrawVersion();
 
             GUILayout.Space(10);
             EditorGUILayout.EndScrollView();
