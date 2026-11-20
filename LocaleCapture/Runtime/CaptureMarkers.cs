@@ -123,4 +123,103 @@ namespace CookApps.LocaleCapture
             return sb.Length > 120 ? sb.ToString(0, 120) : sb.ToString();
         }
     }
+
+    // 기록의 Addressables 로딩 완료("addr" 동기 지점)를 재생의 완료와 짝짓는다.
+    // 개수만 세면 재생에만 있는 로딩이 한 번 끼는 순간부터 그 뒤가 모두 한 칸씩 앞서 짝지어져, 늦게 끝난 로딩을 기다리지 못한다
+    // (이 도구가 재생 때 언어 시스템을 일찍 건드려 부팅에 Locale 로딩이 몇 개 더 생기는 것만으로도 그렇게 된다).
+    // 그래서 이름으로 먼저 짝짓고, 이름이 다른 것(언어마다 다른 글꼴·테이블)만 차례로 맞춘다:
+    //   1. 같은 이름의 재생 완료
+    //   2. 기록에 없는 이름의 재생 완료 중 같은 종류(작업·에셋 형식)인 것 — 언어만 다른 같은 로딩
+    //   3. 기록에 없는 이름의 재생 완료 중 최근(Window 프레임 안) 것 — 구조가 다른 로딩(초기화 방식 차이 등)
+    // 어느 것도 없으면 아직 안 끝난 것이다(기다린다). 기록에 이름이 없으면(이전 기록) 예전처럼 개수로만 맞춘다.
+    internal sealed class LoadMatcher
+    {
+        private struct Spare { public int Frame; public string Kind; }
+
+        private readonly bool _named;
+        private readonly int _window;
+        private readonly Dictionary<string, int> _expected = new Dictionary<string, int>();             // 아직 안 지난 기록 로딩(이름별 개수)
+        private readonly Dictionary<string, Queue<int>> _byName = new Dictionary<string, Queue<int>>();  // 기록에 같은 이름이 남아 있는 재생 완료
+        private readonly List<Spare> _spare = new List<Spare>();                                         // 기록에 없는 이름의 재생 완료(온 순서)
+
+        // recordedNames: 기록의 로딩 이름(순서대로). null 이면 이름 없이 개수로만 맞춘다.
+        internal LoadMatcher(IEnumerable<string> recordedNames, int window)
+        {
+            _window = window;
+            _named = recordedNames != null;
+            if (!_named) return;
+            foreach (string name in recordedNames)
+            {
+                _expected.TryGetValue(name ?? "", out int count);
+                _expected[name ?? ""] = count + 1;
+            }
+        }
+
+        // 재생에서 로딩 하나가 끝났다.
+        internal void Arrive(string name, int frame)
+        {
+            if (_named && name != null && _expected.TryGetValue(name, out int expected))
+            {
+                if (!_byName.TryGetValue(name, out Queue<int> q)) _byName[name] = q = new Queue<int>();
+                if (q.Count < expected) { q.Enqueue(frame); return; }
+            }
+            _spare.Add(new Spare { Frame = frame, Kind = KindOf(name) });
+        }
+
+        // 기록의 로딩(recordedName, recordedFrame 에 끝남)에 맞는 재생 완료가 있으면 짝짓고 그 도착 프레임을 돌려준다.
+        internal bool TryMatch(string recordedName, int recordedFrame, out int arrivedFrame)
+        {
+            arrivedFrame = 0;
+            if (!_named) return Take(0, out arrivedFrame);
+            string name = recordedName ?? "";
+            if (_byName.TryGetValue(name, out Queue<int> q) && q.Count > 0)
+            {
+                arrivedFrame = q.Dequeue();
+                Passed(name);
+                return true;
+            }
+            string kind = KindOf(recordedName);
+            int found = -1;
+            if (kind != null) found = _spare.FindIndex(s => s.Kind == kind);
+            if (found < 0) found = _spare.FindLastIndex(s => s.Frame >= recordedFrame - _window);
+            if (found < 0) return false;
+            Take(found, out arrivedFrame);
+            Passed(name);
+            return true;
+        }
+
+        // 기다리다 넘어간 기록 로딩 — 뒤늦게 같은 이름이 오면 기록에 없는 로딩으로 친다.
+        internal void Skip(string recordedName)
+        {
+            if (_named) Passed(recordedName ?? "");
+        }
+
+        private bool Take(int index, out int frame)
+        {
+            frame = 0;
+            if (index >= _spare.Count) return false;
+            frame = _spare[index].Frame;
+            _spare.RemoveAt(index);
+            return true;
+        }
+
+        private void Passed(string name)
+        {
+            if (!_expected.TryGetValue(name, out int count)) return;
+            if (count <= 1) _expected.Remove(name); else _expected[name] = count - 1;
+            // 이 이름으로 더 올 기록이 없는데 남아 있는 재생 완료는 기록에 없는 로딩이다
+            if (!_byName.TryGetValue(name, out Queue<int> q)) return;
+            while (q.Count > count - 1) _spare.Add(new Spare { Frame = q.Dequeue(), Kind = KindOf(name) });
+        }
+
+        // 로딩의 종류: "작업 형식<에셋 형식>" — 대상 이름("(…)" 안)이나 주소는 뺀다. 예) "ProviderOperation Resource<Material>"
+        internal static string KindOf(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            int paren = name.IndexOf('(');
+            if (paren > 0) return name.Substring(0, paren);
+            int space = name.IndexOf(' ');
+            return space > 0 ? name.Substring(0, space) : name;
+        }
+    }
 }

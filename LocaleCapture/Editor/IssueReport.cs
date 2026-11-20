@@ -74,7 +74,7 @@ namespace CookApps.LocaleCapture.Editor
                 string pass = fileName.EndsWith(".fast.json", StringComparison.OrdinalIgnoreCase) ? r.Pass + " (빠른 재생 — 이 뒤 실제 속도로 다시 뽑음)"
                     : attempt >= 0 ? r.Pass + $" (실제 속도 재생 — 이 뒤 다시 뽑음, {fileName.Substring(attempt + 1, fileName.Length - attempt - 6)})"
                     : r.Pass;
-                sb.AppendLine($"### {pass} — {verdict}, {r.Frames}프레임(녹화 시작 {r.VideoStartFrame}), 서버 재생 {r.ServerReplayed}·실서버 {r.ServerLive}·없음 {r.ServerMissed}, " +
+                sb.AppendLine($"### {pass} — {verdict}, {r.Frames}프레임(녹화 시작 {r.VideoStartFrame}), 서버 재생 {r.ServerReplayed}(통신 코드 경유 {r.ServerPiped})·실서버 {r.ServerLive}·없음 {r.ServerMissed}, " +
                               $"로딩 대기 {r.HeldFrames}프레임, 난수 어긋남 {r.StateMismatchFrames}프레임");
                 if (r.DivergedFrame >= 0) sb.AppendLine($"- **처음 달라진 곳**: 프레임 {r.DivergedFrame} [{r.DivergedKind}] {Shorten(r.DivergedDetail, 300)}");
                 if (r.EarlyFrame >= 0) sb.AppendLine($"- 녹화 시작 전 처음 달라진 곳: 프레임 {r.EarlyFrame} [{r.EarlyKind}] {Shorten(r.EarlyDetail, 300)}");

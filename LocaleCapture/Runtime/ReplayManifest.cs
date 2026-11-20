@@ -22,7 +22,8 @@ namespace CookApps.LocaleCapture
         //  3 부터: 작업 스레드에서 메인 스레드로 넘어오는 이어받기를 붙잡아 넘긴 프레임을 남긴다(ThreadPosts).
         //  4 부터: Addressables 에셋 데이터베이스 모드의 가짜 로딩 지연(Simulated Load Delay) 없이 기록한다.
         //  5 부터: Addressables 의 연쇄 로딩(콜백에서 다음 로드)을 한 프레임에 끝내며 기록한다.
-        public const int CurrentTraceVersion = 5;
+        //  6 부터: 기록 시작 때 실제 장치마다 가상 장치를 미리 만들고 그 목록을 남긴다(Devices). 재생도 같은 장치를 같은 순서로 만든다.
+        public const int CurrentTraceVersion = 6;
         public int TraceVersion;
         public int SeedScheme;   // new Random() 시드 방식(CaptureClock). 재생은 기록 때 방식을 따른다
 
@@ -61,6 +62,21 @@ namespace CookApps.LocaleCapture
         public List<int> FrameMs = new List<int>();   // 프레임마다 실제로 걸린 ms(끊김 진단)
         // 기록 중 인스펙터에서 바꾼 켜기/끄기. 재생 때 같은 프레임에 같은 값으로 둔다.
         public List<InspectorToggles.Toggle> Toggles = new List<InspectorToggles.Toggle>();
+        [Serializable]
+        public struct Device
+        {
+            public int Frame;       // 만든 세션 프레임(0 = 세션 시작)
+            public int Id;          // 입력 기록 안의 장치 번호
+            public string Layout;
+        }
+
+        // 기록 때 게임이 본 가상 입력 장치(만든 순서). 재생은 같은 장치를 같은 순서·같은 때에 만든다.
+        // 장치가 추가되면 Input System 이 액션 바인딩을 다시 풀고, 그때 이미 움직였거나 눌려 있는 컨트롤이 한 번 더 발사된다 —
+        // 그 프레임에 들어온 다른 입력과 섞여 UI 가 엉뚱한 쪽을 고른다(마우스를 움직인 뒤의 첫 터치가 버려졌다).
+        public List<Device> Devices = new List<Device>();
+        // 세션 프레임 0 이 끝난 때의 엔진 프레임 번호와 엔진 시간. 실행마다 같아야 게임이 보는 Time.time·Time.frameCount 가 같다.
+        public int EngineFrame;
+        public double EngineTime;
         public string TraceFile = "input.trace";
         public const string StateFolder = "state";   // 기록 시작 때의 로컬 저장(persistentDataPath·PlayerPrefs)
 

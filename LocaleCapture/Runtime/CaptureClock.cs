@@ -108,6 +108,8 @@ namespace CookApps.LocaleCapture
         // 오디오를 프레임마다 렌더링하기 시작한 직후 부른다 — 이후 엔진 dspTime 과 같은 값을 내 PlayScheduled 가 어긋나지 않게.
         internal static void SyncDsp() => _dspBase = AudioSettings.dspTime - Elapsed;
         public static SystemLanguage SystemLanguage => Active && _language.HasValue ? _language.Value : Application.systemLanguage;
+        // 세션 동안 게임은 늘 포커스가 있다고 본다(에디터 패치가 OnApplicationFocus·OnApplicationPause 알림도 막는다).
+        public static bool IsFocused => Active || Application.isFocused;
 
         // Task.Delay 대신. 실제 시계가 아니라 세션 프레임으로 끝난다 — 녹화(인코딩)로 프레임이 느려져도 같은 프레임에 깬다.
         // 세션 Update 가 Release 로 때가 된 것을 푼다.

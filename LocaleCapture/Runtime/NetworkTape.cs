@@ -15,7 +15,8 @@ namespace CookApps.LocaleCapture
 {
     // 서버 응답 테이프. 기록 때는 나간 요청의 응답을 순서·지연(프레임)과 함께 저장하고, 재생 때는 같은 요청에 서버 대신
     // 저장한 응답을 같은 지연으로 돌려준다. 가챠·보상처럼 서버가 정하는 결과도 언어마다 같아지고 서버 상태와 무관해진다.
-    //  · HttpClient(HttpMessageInvoker.SendAsync): 응답 객체를 바로 돌려준다
+    //  · HttpClient(HttpMessageInvoker.SendAsync): 통신 코드를 그대로 돌리고, 맨 아래 핸들러에서 서버 대신 원본 응답으로 답한다("전송 단계").
+    //    원본 응답이 없는 항목은 응답 객체를 바로 돌려준다
     //  · UnityWebRequest(텍스트 응답만): 요청 주소를 이 프로세스 안의 작은 서버(127.0.0.1)로 바꿔 저장한 응답을 받게 한다
     // 요청 주소·본문에 언어 코드가 든 요청(언어 데이터 등)은 언어마다 달라야 하므로 언어별 테이프에 따로 둔다 —
     // 그 언어로 처음 뽑을 때만 실제 서버로 가고, 다음부터는 언어별 테이프로 재생한다(나중에 다시 뽑아도 서버가 필요 없다).
@@ -46,6 +47,9 @@ namespace CookApps.LocaleCapture
             // 재생에서 같은 프레임에 같은 식으로 끝낸다. 이전 기록에는 없다(0 = 응답 받음).
             public int Outcome;
             public const int Completed = 0, Faulted = 1, Canceled = 2, Unfinished = 3;
+            // HttpClient 요청: 통신 코드의 맨 아래(전송 단계)가 서버에서 받은 원본 응답, 보낸 순서대로(재시도하면 여러 개).
+            // 위의 Status·Body 는 통신 코드가 다 처리하고 게임에 넘긴 결과다. 이전 기록에는 없다.
+            public List<Raw> Raws = new List<Raw>();
 
             // 재생에서만: 녹화에 언어 표기만 다른 같은 요청이 있어 타이밍은 그쪽을 따르고, 내용은 실제 서버에서 받는다.
             [NonSerialized] public bool Fetch;
@@ -54,8 +58,21 @@ namespace CookApps.LocaleCapture
             internal Entry WithTiming(Entry timing) => new Entry
             {
                 Method = Method, Url = Url, RequestFrame = timing.RequestFrame, LatencyFrames = timing.LatencyFrames,
-                Status = Status, Reason = Reason, Headers = Headers, ContentHeaders = ContentHeaders, Body = Body, Outcome = Outcome,
+                Status = Status, Reason = Reason, Headers = Headers, ContentHeaders = ContentHeaders, Body = Body, Outcome = Outcome, Raws = Raws,
             };
+        }
+
+        // 전송 단계가 받은 응답 하나. 암호화·서명·봉투가 그대로인 서버 응답이다.
+        [Serializable]
+        public sealed class Raw
+        {
+            public int Status;
+            public string Reason;   // 응답 없이 끝났으면 예외 메시지
+            public string Error;    // 응답 없이 끝났으면 예외 타입
+            public List<Header> Headers = new List<Header>();
+            public List<Header> ContentHeaders = new List<Header>();
+            public string Body;     // base64
+            public int Outcome;     // Entry.Completed·Faulted·Canceled·Unfinished
         }
 
         // 실제 서버에서 받는 중인 응답. 녹화 때 도착한 프레임(Due)이 됐는데 아직 안 왔으면 세션이 게임 시간을 멈추고 기다린다.
@@ -78,6 +95,7 @@ namespace CookApps.LocaleCapture
         public static int Missed { get; private set; }
         public static int Live { get; private set; }
         public static int Fetched { get; private set; }   // 재생: 실제 서버에서 받아 온 응답 수(언어 요청·기록에 없던 요청) — 받는 동안 게임 시간을 멈추고 기다렸다
+        public static int Piped => _piped;                // 재생: 그중 전송 단계의 원본 응답으로 통신 코드를 돌려 답한 수
 
         private static string _directory, _locale;
         private static int _fps = 30;
@@ -99,6 +117,8 @@ namespace CookApps.LocaleCapture
             public Entry Entry;
             public bool OffMain;                   // 작업 스레드에서 보낸 요청 — 응답도 작업 스레드에서 넘긴다
             public int Frame, Stall;               // 요청한 세션 프레임과 그때까지 따로 돌린 프레임 수(Stall 참고)
+            public Task<HttpResponseMessage> Piped;   // 테이프의 원본 응답으로 통신 코드를 돌린 결과 — 있으면 이걸 넘긴다
+            public bool GaveUp;                    // 그 결과를 너무 오래 기다렸다 — 나오는 대로 넘긴다
         }
 
         private static readonly List<Waiting> _waiting = new List<Waiting>();
@@ -153,7 +173,9 @@ namespace CookApps.LocaleCapture
             _tapedDue.Clear();
             _warned.Clear();
             lock (_inFlight) _inFlight.Clear();
-            Replayed = Missed = Live = Fetched = 0;
+            lock (_active) _active.Clear();
+            lock (_transports) _transports.Clear();   // 패치는 세션마다 새로 건다
+            Replayed = Missed = Live = Fetched = _piped = 0;
         }
 
         private static void Load(string path, Dictionary<string, Queue<Entry>> into)
@@ -235,6 +257,7 @@ namespace CookApps.LocaleCapture
                     // 시계를 따로 돌리는 중에 나간 요청은 그 뒤로 돌린 만큼만 앞당긴다
                     int turned = w.Frame == frame ? stall - w.Stall : stall;
                     if (w.OffMain != offMain || w.Due > frame + turned) continue;
+                    if (w.Piped != null && !w.Piped.IsCompleted && !w.GaveUp) continue;   // 통신 코드가 아직 도는 중 — 세션이 기다린다(Overdue)
                     (due ??= new List<Waiting>()).Add(w);
                     _waiting.RemoveAt(i--);
                 }
@@ -246,6 +269,13 @@ namespace CookApps.LocaleCapture
         {
             try
             {
+                if (w.Piped != null)
+                {
+                    Entry entry = w.Entry;
+                    TaskCompletionSource<HttpResponseMessage> tcs = w.Tcs;
+                    w.Piped.ContinueWith(t => { CheckPiped(entry, t); Forward(t, tcs); }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    return;
+                }
                 int outcome = w.Entry == null ? Entry.Completed : w.Entry.Outcome;
                 if (outcome == Entry.Canceled) w.Tcs.TrySetCanceled();
                 else if (outcome == Entry.Faulted) w.Tcs.TrySetException(new HttpRequestException(string.IsNullOrEmpty(w.Entry.Reason) ? "기록 때 실패한 요청" : w.Entry.Reason));
@@ -280,6 +310,9 @@ namespace CookApps.LocaleCapture
             lock (_pending)
                 foreach (Pending p in _pending)
                     if (!p.GaveUp && p.Due <= now && !IsReady(p)) return p.Name;
+            lock (_gate)
+                foreach (Waiting w in _waiting)
+                    if (w.Piped != null && !w.GaveUp && w.Due <= now && !w.Piped.IsCompleted) return Short(Key(w.Entry.Method, w.Entry.Url));
             return null;
         }
 
@@ -290,6 +323,9 @@ namespace CookApps.LocaleCapture
             lock (_pending)
                 foreach (Pending p in _pending)
                     if (p.Due <= now) p.GaveUp = true;
+            lock (_gate)
+                foreach (Waiting w in _waiting)
+                    if (w.Piped != null && w.Due <= now) w.GaveUp = true;
         }
 
         private static void AddPending(Pending p)
@@ -306,7 +342,7 @@ namespace CookApps.LocaleCapture
                 {
                     Save(Path.Combine(_directory, FileName), _recorded);
                     if (_liveRecorded.Count > 0) Save(Path.Combine(_directory, LiveFileName(recordedLocale)), _liveRecorded);
-                    Debug.Log($"[LocaleCapture] 서버 응답 {_recorded.Count}개 기록, 언어별 {_liveRecorded.Count}개");
+                    Debug.Log($"[LocaleCapture] 서버 응답 {_recorded.Count}개 기록(전송 단계 원본이 있는 것 {_recorded.FindAll(HasRaws).Count}개), 언어별 {_liveRecorded.Count}개");
                 }
                 else if (Current == Mode.Replay)
                 {
@@ -323,7 +359,7 @@ namespace CookApps.LocaleCapture
                         if (save && requested < _frame - 1) CaptureVerify.ServerDiffered(requested, unused);
                         else CaptureVerify.Add(requested, "서버", unused);
                     }
-                    Debug.Log($"[LocaleCapture] 서버 응답 재생 {Replayed}개, 실서버 {Live}개, 테이프에 없음 {Missed}개");
+                    Debug.Log($"[LocaleCapture] 서버 응답 재생 {Replayed}개(통신 코드를 거쳐 답한 것 {Piped}개), 실서버 {Live}개, 테이프에 없음 {Missed}개");
                 }
             }
             catch (Exception e) { Debug.LogWarning("[LocaleCapture] 테이프 저장 실패: " + e.Message); }
@@ -343,6 +379,7 @@ namespace CookApps.LocaleCapture
             lock (_pending) { pending = new List<Pending>(_pending); _pending.Clear(); }
             foreach (Pending p in pending) if (IsReady(p)) p.Deliver?.Invoke();
             _tapedDue.Clear();
+            lock (_active) _active.Clear();
             TapeServer.Stop();
             Current = Mode.Off;
         }
@@ -516,19 +553,28 @@ namespace CookApps.LocaleCapture
             public Entry Entry;       // 이 요청을 기록 중인 항목(없으면 null)
             public Entry Timing;      // 재생: 실제 서버로 보냈고, 이 녹화 요청의 프레임에 맞춰 넘긴다
             public bool MainThread;   // 메인 스레드에서 보낸 요청인가
+            public string Flight;     // 실제 서버로 보내는 동안의 _inFlight 키
+            // 아래는 전송 단계("전송 단계" 절)에서 쓴다
+            public Entry Tape;        // 재생: 통신 코드를 그대로 돌리고, 전송 단계에서 이 녹화 항목의 원본 응답으로 답한다
+            public int NextRaw;       // 그중 다음에 내줄 차례
+            public List<Raw> Raws;    // 실제 서버로 보낸 요청: 전송 단계가 받은 응답(기록 항목이 이 목록을 그대로 쓴다)
+            public int TransportDepth;
+            public string Active;     // _active 에 올린 키
         }
 
         private static readonly ConditionalWeakTable<HttpRequestMessage, Call> _calls = new ConditionalWeakTable<HttpRequestMessage, Call>();
 
         // Harmony prefix: 테이프에 있으면 서버 대신 응답(true).
         // 서버로 보낼 땐 여기서 진행 중 표시를 건다 — 안쪽 UnityWebRequest 는 원본 호출 안에서 바로 나가서 postfix 로는 늦다.
-        public static bool TryReplay(HttpRequestMessage request, out Task<HttpResponseMessage> result)
+        // invoker: 요청을 보내는 HttpClient(전송 단계를 찾는 데 쓴다).
+        public static bool TryReplay(HttpMessageInvoker invoker, HttpRequestMessage request, out Task<HttpResponseMessage> result)
         {
             result = null;
             if (Current == Mode.Off || request == null) return false;
             Call call = _calls.GetOrCreateValue(request);
             if (call.Depth++ > 0) return false;   // 겹친 안쪽 호출 — 바깥 prefix 가 이미 정했다
             call.MainThread = CaptureClock.OnMainThread;
+            bool transport = WatchTransport(invoker);
             string url = request.RequestUri?.ToString();
             Entry e = null;
             if (Current == Mode.Replay)
@@ -539,8 +585,18 @@ namespace CookApps.LocaleCapture
             if (e != null && e.Fetch) { call.Timing = e; Fetched++; }   // 실제 서버로 보내고, postfix 가 녹화 프레임에 맞춰 넘긴다
             if (e == null || e.Fetch)
             {
-                string key = FlightKey(request.Method.Method, url);
+                string key = call.Flight = FlightKey(request.Method.Method, url);
                 lock (_inFlight) _inFlight[key] = _inFlight.TryGetValue(key, out int n) ? n + 1 : 1;
+                Enter(call, key);
+                return false;
+            }
+            if (transport && HasRaws(e))
+            {
+                // 통신 코드를 그대로 돌린다 — 전송 단계의 prefix(TryTransport)가 서버 대신 원본 응답으로 답하고,
+                // 이 호출의 postfix(Record)가 끝난 결과를 녹화 프레임에 넘긴다.
+                call.Tape = e;
+                Enter(call, FlightKey(request.Method.Method, url));
+                Interlocked.Increment(ref _piped);
                 return false;
             }
             _fromTape.Add(request, e);
@@ -572,15 +628,19 @@ namespace CookApps.LocaleCapture
             {
                 _handled.Add(request, null);
                 string url = request.RequestUri?.ToString();
-                string key = FlightKey(request.Method.Method, url);
+                string key = call.Flight;
                 original.ContinueWith(_ =>
                 {
+                    Leave(call);
+                    if (key == null) return;
                     lock (_inFlight)
                         if (_inFlight.TryGetValue(key, out int n)) { if (n <= 1) _inFlight.Remove(key); else _inFlight[key] = n - 1; }
                 }, TaskContinuationOptions.ExecuteSynchronously);
-                if (call.Timing != null)
+                if (call.Tape != null) { /* 테이프의 원본 응답으로 답한 요청 — 새로 적을 것이 없다 */ }
+                else if (call.Timing != null)
                 {
                     call.Entry = NewEntry(request.Method.Method, url, true);
+                    ShareRaws(call);
                     task = RecordAsync(call.Entry, original);
                 }
                 else
@@ -590,14 +650,66 @@ namespace CookApps.LocaleCapture
                     if (ShouldRecord(live, false))
                     {
                         call.Entry = NewEntry(request.Method.Method, url, live);
+                        ShareRaws(call);
                         task = RecordAsync(call.Entry, original);
                     }
                 }
             }
+            if (call.Tape != null) return outermost ? DeliverPiped(call, task) : task;
             if (!outermost || call.Entry == null) return task;
             if (call.Timing != null) return call.MainThread ? DeliverAt(task, call.Timing) : task;
             // 다른 스레드에서 보낸 요청은 그대로 둔다 — 그 스레드가 응답을 막고 기다리면 메인 스레드 Update 를 못 기다린다.
             return Current == Mode.Record && call.MainThread ? DeliverRecorded(call.Entry, task) : task;
+        }
+
+        // 테이프의 원본 응답으로 통신 코드를 돌린 결과를, 녹화에서 게임이 응답을 이어받은 프레임에 넘긴다(바깥에서 바로 답하는 요청과 같은 줄에 선다).
+        // 전송 단계가 요청 호출 안에서 바로 답하므로 결과는 보통 이미 나와 있다. 통신 코드가 스레드를 갈아타 아직이면 세션이 기다린다(Overdue).
+        private static Task<HttpResponseMessage> DeliverPiped(Call call, Task<HttpResponseMessage> piped)
+        {
+            var tcs = new TaskCompletionSource<HttpResponseMessage>();
+            lock (_gate)
+                _waiting.Add(new Waiting { Due = DueFrame(call.Tape), Tcs = tcs, Piped = piped, Entry = call.Tape, OffMain = !call.MainThread, Frame = _frame, Stall = _stallFrames });
+            return tcs.Task;
+        }
+
+        private static void Forward(Task<HttpResponseMessage> from, TaskCompletionSource<HttpResponseMessage> to)
+        {
+            if (from.IsFaulted) to.TrySetException(from.Exception.InnerExceptions);
+            else if (from.IsCanceled) to.TrySetCanceled();
+            else to.TrySetResult(from.Result);
+        }
+
+        // 통신 코드가 같은 원본 응답을 녹화 때와 같게 처리했나. 다르면 게임이 받는 내용이 달라진 것이다.
+        private static void CheckPiped(Entry e, Task<HttpResponseMessage> piped)
+        {
+            try
+            {
+                string differs = null;
+                if (e.Outcome == Entry.Faulted)
+                {
+                    string recorded = e.Reason ?? "";
+                    int colon = recorded.IndexOf(':');
+                    string type = piped.IsFaulted ? piped.Exception.InnerExceptions[0].GetType().Name : null;
+                    if (type == null || (colon > 0 && recorded.Substring(0, colon) != type)) differs = $"녹화에서는 실패({Short(recorded)}), 재생에서는 {Describe(piped)}";
+                }
+                else if (piped.Status != TaskStatus.RanToCompletion || piped.Result == null) differs = $"녹화에서는 응답 {e.Status}, 재생에서는 {Describe(piped)}";
+                else if ((int) piped.Result.StatusCode != e.Status) differs = $"녹화에서는 응답 {e.Status}, 재생에서는 응답 {(int) piped.Result.StatusCode}";
+                else if (piped.Result.Content is ByteArrayContent content)
+                {
+                    Task<byte[]> read = content.ReadAsByteArrayAsync();
+                    if (read.Status == TaskStatus.RanToCompletion && Convert.ToBase64String(read.Result) != (e.Body ?? "")) differs = "응답 내용이 녹화와 다르다";
+                }
+                if (differs != null)
+                    CaptureVerify.ServerDiffered(_frame, $"통신 코드가 같은 서버 응답을 녹화와 다르게 처리했다 — {differs}: {Short(Key(e.Method, e.Url))}");
+            }
+            catch (Exception ex) { Debug.LogWarning($"[LocaleCapture] 통신 코드 결과 비교 실패({e.Url}): {ex.Message}"); }
+        }
+
+        private static string Describe(Task<HttpResponseMessage> task)
+        {
+            if (task.IsCanceled) return "취소";
+            if (task.IsFaulted) { Exception x = task.Exception.InnerExceptions[0]; return Short($"실패({x.GetType().Name}: {x.Message})"); }
+            return task.Result == null ? "응답 없음" : $"응답 {(int) task.Result.StatusCode}";
         }
 
         // 기록 때도 응답을 세션 Update 에서 넘긴다 — 재생이 테이프 응답을 넘기는 자리와 같다.
@@ -680,13 +792,213 @@ namespace CookApps.LocaleCapture
             catch { return null; }
         }
 
-        private static HttpResponseMessage ToResponse(Entry e, HttpRequestMessage request)
+        private static HttpResponseMessage ToResponse(Entry e, HttpRequestMessage request) =>
+            ToResponse(e.Status, e.Reason, e.Headers, e.ContentHeaders, e.Body, request);
+
+        private static HttpResponseMessage ToResponse(int status, string reason, List<Header> headers, List<Header> contentHeaders, string body, HttpRequestMessage request)
         {
-            var response = new HttpResponseMessage((HttpStatusCode) e.Status) { ReasonPhrase = e.Reason, RequestMessage = request };
-            response.Content = new ByteArrayContent(string.IsNullOrEmpty(e.Body) ? Array.Empty<byte>() : Convert.FromBase64String(e.Body));
-            foreach (Header h in e.ContentHeaders) response.Content.Headers.TryAddWithoutValidation(h.Name, h.Value);
-            foreach (Header h in e.Headers) response.Headers.TryAddWithoutValidation(h.Name, h.Value);
+            var response = new HttpResponseMessage((HttpStatusCode) status) { ReasonPhrase = reason, RequestMessage = request };
+            response.Content = new ByteArrayContent(string.IsNullOrEmpty(body) ? Array.Empty<byte>() : Convert.FromBase64String(body));
+            if (contentHeaders != null) foreach (Header h in contentHeaders) response.Content.Headers.TryAddWithoutValidation(h.Name, h.Value);
+            if (headers != null) foreach (Header h in headers) response.Headers.TryAddWithoutValidation(h.Name, h.Value);
             return response;
+        }
+
+        // ── 전송 단계 ──────────────────────────────────────────────────────────
+        // HttpClient 는 요청을 핸들러 줄(DelegatingHandler)에 차례로 태우고, 그 맨 아래 핸들러가 실제로 서버와 주고받는다. 통신 라이브러리는
+        // 그 줄에서 복호화·서명 확인·봉투 풀기·세션 갱신·오류 변환을 하고, 그 결과 일부를 응답 밖(게임이 따로 읽는 자리)에 남긴다 — 예: 서버가
+        // 봉투에 실어 보낸 서버 시각, 오류 정보. 바깥(HttpClient.SendAsync)에서 저장한 응답을 바로 돌려주면 그 줄이 통째로 건너뛰어져, 게임이
+        // 그 값으로 맞추는 시계가 녹화와 달라진다(녹화에서는 응답마다 서버 시각으로 당겨지고 재생에서는 한 번도 안 맞춰진다 → 시간으로 쌓이는
+        // 보상이 다르게 나온다). 핸들러 안에서 쓰는 난수·Guid 도 재생에서만 안 쓰여 그 뒤 값이 밀린다.
+        // 그래서 맨 아래 핸들러가 받은 원본 응답을 같이 적어 두고(Entry.Raws), 재생에서는 줄을 그대로 돌리되 맨 아래에서만 서버 대신 그 응답으로
+        // 답한다. 어느 요청인지 고르고(Take) 게임에 넘길 프레임을 맞추는 일은 그대로 바깥에서 한다.
+        //  · 원본 응답이 없는 항목(이전 기록, 취소·미완료로 끝난 요청, 맨 아래 핸들러를 못 건 경우)은 예전처럼 바깥에서 바로 답한다.
+        //  · 재생에서는 맨 아래가 요청 호출 안에서 바로 답한다 — 줄이 그 자리에서 끝까지 돌고, 게임은 녹화 프레임에 결과를 받는다.
+
+        // 에디터가 건다: 이 타입의 SendAsync 에 TryTransport·RecordTransport 를 Harmony 로 붙이고, 됐는지 돌려준다.
+        public static Func<Type, bool> TransportPatcher;
+        private static readonly Dictionary<Type, bool> _transports = new Dictionary<Type, bool>();
+        private static System.Reflection.FieldInfo _handlerField;
+        private static int _piped;
+        // 통신 코드를 도는 중인 요청(주소별). 핸들러가 요청 객체를 새로 만들어 내려보내도(재시도 등) 주소가 같으면 그 요청으로 본다.
+        private static readonly Dictionary<string, List<Call>> _active = new Dictionary<string, List<Call>>();
+
+        // 이 HttpClient 의 맨 아래 핸들러를 찾아 지켜본다. 못 하면 false — 그 요청은 바깥에서만 기록·재생한다.
+        private static bool WatchTransport(HttpMessageInvoker invoker)
+        {
+            if (invoker == null || TransportPatcher == null) return false;
+            try
+            {
+                _handlerField ??= Array.Find(
+                    typeof(HttpMessageInvoker).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public),
+                    f => typeof(HttpMessageHandler).IsAssignableFrom(f.FieldType));
+                var handler = _handlerField?.GetValue(invoker) as HttpMessageHandler;
+                for (int i = 0; i < 64 && handler is DelegatingHandler outer; i++) handler = outer.InnerHandler;
+                if (handler == null || handler is DelegatingHandler) return false;
+                Type type = handler.GetType();
+                lock (_transports)
+                {
+                    if (!_transports.TryGetValue(type, out bool watched)) _transports[type] = watched = TransportPatcher(type);
+                    return watched;
+                }
+            }
+            catch (Exception e)
+            {
+                if (_warned.Add("transport")) Debug.LogWarning("[LocaleCapture] 전송 단계를 찾지 못했다 — 서버 응답을 통신 코드 바깥에서 기록·재생한다: " + e.Message);
+                return false;
+            }
+        }
+
+        // 전송 단계의 원본 응답으로 재생할 수 있는 항목인가. 취소·미완료로 끝난 요청은 바깥에서 같은 프레임에 그렇게 끝낸다.
+        private static bool HasRaws(Entry e)
+        {
+            if (e.Raws == null || e.Raws.Count == 0 || (e.Outcome != Entry.Completed && e.Outcome != Entry.Faulted)) return false;
+            foreach (Raw raw in e.Raws)
+                if (raw == null || raw.Outcome == Entry.Unfinished) return false;
+            return true;
+        }
+
+        private static void ShareRaws(Call call)
+        {
+            lock (call) call.Entry.Raws = call.Raws ??= new List<Raw>();
+        }
+
+        private static void Enter(Call call, string key)
+        {
+            lock (_active)
+            {
+                call.Active = key;
+                if (!_active.TryGetValue(key, out List<Call> list)) _active[key] = list = new List<Call>();
+                list.Add(call);
+            }
+        }
+
+        private static void Leave(Call call)
+        {
+            lock (_active)
+            {
+                if (call.Active == null || !_active.TryGetValue(call.Active, out List<Call> list)) return;
+                list.Remove(call);
+                if (list.Count == 0) _active.Remove(call.Active);
+                call.Active = null;
+            }
+        }
+
+        // 전송 단계에 내려온 요청이 바깥의 어느 호출 것인가. 보통은 같은 요청 객체다.
+        private static Call CallFor(HttpRequestMessage request)
+        {
+            if (_calls.TryGetValue(request, out Call call)) return call;
+            string key = FlightKey(request.Method.Method, request.RequestUri?.ToString());
+            lock (_active) return _active.TryGetValue(key, out List<Call> list) && list.Count > 0 ? list[0] : null;
+        }
+
+        // Harmony prefix(맨 아래 핸들러의 SendAsync): 테이프의 원본 응답으로 답할 요청이면 서버 대신 바로 답한다(true).
+        public static bool TryTransport(HttpRequestMessage request, out Task<HttpResponseMessage> result)
+        {
+            result = null;
+            if (Current == Mode.Off || request == null) return false;
+            Call call = CallFor(request);
+            if (call == null) return false;
+            Raw raw;
+            bool extra = false;
+            lock (call)
+            {
+                if (call.TransportDepth++ > 0 || call.Tape == null) return false;   // 겹친 안쪽 호출이거나, 실제 서버로 보내는 요청(postfix 가 받아 적는다)
+                List<Raw> raws = call.Tape.Raws;
+                int index = call.NextRaw++;
+                // 기록보다 여러 번 보내면(재시도 횟수가 다르면) 마지막 응답을 다시 준다 — 재생 중에 실제 서버로는 보내지 않는다.
+                if (index >= raws.Count) { index = raws.Count - 1; extra = true; }
+                raw = raws[index];
+            }
+            if (extra) CaptureVerify.ServerDiffered(_frame, "통신 코드가 같은 요청을 기록보다 여러 번 보냈다(마지막 서버 응답으로 대신): " + Short(Key(call.Tape.Method, call.Tape.Url)));
+            try { result = FromRaw(raw, request); }
+            catch (Exception e) { result = Task.FromException<HttpResponseMessage>(e); }
+            return true;
+        }
+
+        private static Task<HttpResponseMessage> FromRaw(Raw raw, HttpRequestMessage request)
+        {
+            if (raw.Outcome == Entry.Canceled) return Task.FromCanceled<HttpResponseMessage>(new CancellationToken(true));
+            if (raw.Outcome == Entry.Faulted)
+            {
+                string message = string.IsNullOrEmpty(raw.Reason) ? "기록 때 실패한 요청" : raw.Reason;
+                Exception error = null;
+                try
+                {
+                    Type type = string.IsNullOrEmpty(raw.Error) ? null : Type.GetType(raw.Error);
+                    if (type != null && typeof(Exception).IsAssignableFrom(type)) error = Activator.CreateInstance(type, message) as Exception;
+                }
+                catch { /* 그 타입으로 못 만들면 연결 실패로 */ }
+                return Task.FromException<HttpResponseMessage>(error ?? new HttpRequestException(message));
+            }
+            return Task.FromResult(ToResponse(raw.Status, raw.Reason, raw.Headers, raw.ContentHeaders, raw.Body, request));
+        }
+
+        // Harmony postfix(맨 아래 핸들러의 SendAsync): 실제 서버에서 받은 응답을 받아 적는다. 통신 코드가 읽기 전에 본문을 버퍼에 담아 둔다.
+        // 넘기는 자리는 바꾸지 않는다 — 응답이 끝난 그 스레드·그 자리에서 바로 이어진다(통신 코드의 이어받기가 녹화 전과 같은 때 돈다).
+        public static Task<HttpResponseMessage> RecordTransport(HttpRequestMessage request, Task<HttpResponseMessage> original)
+        {
+            if (Current == Mode.Off || request == null || original == null) return original;
+            Call call = CallFor(request);
+            if (call == null) return original;
+            var raw = new Raw { Outcome = Entry.Unfinished };
+            lock (call)
+            {
+                if (--call.TransportDepth > 0 || call.Tape != null) return original;
+                (call.Raws ??= new List<Raw>()).Add(raw);   // 보낸 순서대로
+            }
+            var tcs = new TaskCompletionSource<HttpResponseMessage>();
+            original.ContinueWith(t =>
+            {
+                try
+                {
+                    if (t.IsCanceled) { raw.Outcome = Entry.Canceled; tcs.TrySetCanceled(); return; }
+                    if (t.IsFaulted)
+                    {
+                        Exception error = t.Exception.InnerExceptions[0];
+                        raw.Error = error.GetType().AssemblyQualifiedName;
+                        raw.Reason = error.Message;
+                        raw.Outcome = Entry.Faulted;
+                        tcs.TrySetException(t.Exception.InnerExceptions);
+                        return;
+                    }
+                    HttpResponseMessage response = t.Result;
+                    Task load = response?.Content?.LoadIntoBufferAsync();
+                    if (load == null || load.IsCompleted) { Capture(raw, response, load); tcs.TrySetResult(response); }
+                    else
+                        load.ContinueWith(done => { Capture(raw, response, done); tcs.TrySetResult(response); },
+                            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[LocaleCapture] 전송 단계 응답 기록 실패({request.RequestUri}): {e.Message}");
+                    Forward(t, tcs);
+                }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            return tcs.Task;
+        }
+
+        // load: 본문을 버퍼에 담은 작업(본문이 없으면 null). 실패하면 이 응답은 미완료로 남아, 그 요청은 바깥에서 저장한 응답으로 재생한다.
+        private static void Capture(Raw raw, HttpResponseMessage response, Task load)
+        {
+            try
+            {
+                if (response == null || (load != null && load.Status != TaskStatus.RanToCompletion)) return;
+                raw.Status = (int) response.StatusCode;
+                raw.Reason = response.ReasonPhrase;
+                foreach (KeyValuePair<string, IEnumerable<string>> h in response.Headers)
+                    foreach (string v in h.Value) raw.Headers.Add(new Header { Name = h.Key, Value = v });
+                if (response.Content != null)
+                {
+                    Task<byte[]> read = response.Content.ReadAsByteArrayAsync();   // 버퍼에 담겨 있어 바로 끝난다
+                    if (read.Status != TaskStatus.RanToCompletion) return;
+                    raw.Body = Convert.ToBase64String(read.Result);
+                    foreach (KeyValuePair<string, IEnumerable<string>> h in response.Content.Headers)
+                        foreach (string v in h.Value) raw.ContentHeaders.Add(new Header { Name = h.Key, Value = v });
+                }
+                raw.Outcome = Entry.Completed;   // 다 채운 뒤에
+            }
+            catch (Exception e) { Debug.LogWarning("[LocaleCapture] 전송 단계 응답 기록 실패: " + e.Message); }
         }
 
         // ── UnityWebRequest ────────────────────────────────────────────────────

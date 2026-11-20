@@ -182,6 +182,9 @@ namespace CookApps.LocaleCapture
             CaptureMarkers.Clear();
             UiTrace.Begin();
             HitTrace.Begin();
+            // 영상이 나오는 재생 패스에서만 잰다(영상 비교가 본다). 앞 세션이 중간에 끊겨 남은 것은 여기서 치운다.
+            if (IsRecording) LayoutTrace.End();
+            else LayoutTrace.Begin();
             TapProbe.Reset();
             string dir = Request.Directory;
             int fps = Mathf.Max(1, Request.Fps);
@@ -228,7 +231,7 @@ namespace CookApps.LocaleCapture
                 CaptureInput.BeginReplay(Path.Combine(dir, CaptureInput.FileName));
                 CaptureVerify.Begin(_passName, Request.Locale, _manifest, _replayTaps, _replayUi, _replayHits);
                 RandomTrace.Begin(new List<RandomTrace.Call>());
-                _player = new InputTracePlayer(Path.Combine(dir, _manifest.TraceFile), _manifest.EventCounts);
+                _player = new InputTracePlayer(Path.Combine(dir, _manifest.TraceFile), _manifest.EventCounts, _manifest.Devices);
                 UncapFramePacing();
                 // 실제 속도 재생은 기록과 같은 속도로 돈다 — 실시간으로 끝나는 로딩·통신이 기록과 비슷한 프레임에 끝나게.
                 // 빠른 재생은 묶지 않는다. 로딩·서버 응답은 동기 지점과 응답 대기가 기록 프레임에 맞춘다.
@@ -240,6 +243,35 @@ namespace CookApps.LocaleCapture
             StartCoroutine(IsRecording ? RecordLoop() : ReplayLoop());
         }
 
+        // 세션 프레임은 엔진 프레임 StartEngineFrame 이 끝날 때부터 센다(그 전의 엔진 프레임은 모두 세션 프레임 0 에 든다).
+        // 플레이 모드에 들어간 직후에는 화면이 아직 그려지지 않아 "프레임 끝" 신호가 한 번 빠지는 실행이 있다(Game 뷰를 최대화해 띄우는
+        // 재생에서 잦다). 첫 신호부터 세면 그런 실행은 세션 프레임 0 에 엔진 프레임이 하나 더 들어가, 게임이 보는 Time.time·Time.frameCount 가
+        // 녹화와 한 프레임 어긋난다 — "Time.time 이 0.5초 지나면" 식의 게임 타이머가 프레임 경계에서 한 프레임 일찍·늦게 끝난다.
+        // 첫 신호가 언제 오든 같은 엔진 프레임에서 세기 시작하면 실행마다 같다. 재생은 녹화가 세기 시작한 엔진 프레임을 따른다.
+        private const int StartEngineFrame = 4;
+        private bool _engineNoted;
+
+        private bool BeforeStartFrame => Time.frameCount < (IsRecording ? StartEngineFrame : _manifest.EngineFrame);
+
+        // 세션 프레임 0 이 엔진의 몇 번째 프레임·몇 초인지 남긴다(첫 프레임 끝에 한 번).
+        private void NoteEngineStart()
+        {
+            if (_engineNoted) return;
+            _engineNoted = true;
+            if (IsRecording)
+            {
+                _manifest.EngineFrame = Time.frameCount;
+                _manifest.EngineTime = Time.timeAsDouble;
+                if (Time.frameCount != StartEngineFrame)
+                    Debug.LogWarning($"[LocaleCapture] 세션이 엔진 프레임 {Time.frameCount} 에서 시작했다({StartEngineFrame} 이어야 한다) — 첫 화면이 늦게 그려졌다");
+                return;
+            }
+            // 이전 형식 기록(EngineFrame 0)은 세기 시작한 자리가 남아 있지 않다 — 비교하지 않는다.
+            if (_manifest.EngineFrame > 0 && (Time.frameCount != _manifest.EngineFrame || Time.timeAsDouble != _manifest.EngineTime))
+                CaptureVerify.Add(0, "시간", $"세션이 엔진 프레임 {Time.frameCount}(시간 {Time.timeAsDouble:R})에서 시작했다 — 녹화는 {_manifest.EngineFrame}({_manifest.EngineTime:R}). " +
+                                             "게임이 보는 엔진 시간이 녹화와 달라, 프레임 경계에 걸린 게임 타이머가 한 프레임 어긋날 수 있다");
+        }
+
         // ── 기록 ───────────────────────────────────────────────────────────────
 
         private IEnumerator RecordLoop()
@@ -247,6 +279,8 @@ namespace CookApps.LocaleCapture
             while (!_finished)
             {
                 yield return FrameEnd;
+                if (BeforeStartFrame) continue;
+                NoteEngineStart();
                 Pace();
                 if (_finished) break;
                 _tool.Restart();
@@ -274,7 +308,15 @@ namespace CookApps.LocaleCapture
                 _toolMsSum += toolMs;
                 _toolMsMax = Math.Max(_toolMsMax, toolMs);
                 Advance();
+                if (_relay != null) _relay.Frame = Frame;
                 _relay?.Flush();
+                // 실제 장치 입력이 게임에 그대로 들어간 기록은 재생과 어긋난다 — 더 플레이하기 전에 바로 알린다.
+                if (_relay?.Leak != null)
+                {
+                    Finish($"실제 장치({_relay.Leak}) 입력을 가로채지 못해 게임에 그대로 들어갔다 — 이 기록은 재생과 어긋난다. " +
+                           $"Input System {InputSystem.version} 에 맞게 Locale Capture 를 고쳐야 한다", false);
+                    break;
+                }
             }
         }
 
@@ -294,6 +336,7 @@ namespace CookApps.LocaleCapture
             if (dropped > 0)
                 throw new InvalidOperationException($"입력 기록이 한도({TraceMaxBytes >> 20}MB)를 넘어 앞쪽 입력 {dropped}개가 지워졌다 — 이 기록은 재생할 수 없다. 더 짧게 나눠 녹화한다");
             _manifest.Frames = Frame;
+            if (_relay != null) _manifest.Devices = new List<ReplayManifest.Device>(_relay.Devices);
             _manifest.RandomCreations = new List<CaptureClock.RandomCreation>(CaptureClock.Creations);
             _manifest.ThreadPosts = new List<ThreadGate.Post>(ThreadGate.Log);
             if (string.IsNullOrEmpty(_manifest.RecordedLocale)) _manifest.RecordedLocale = LocalizationBridge.SelectedCode(true);
@@ -349,6 +392,10 @@ namespace CookApps.LocaleCapture
                 CaptureVerify.Add(0, "화면", $"게임뷰 {Screen.width}x{Screen.height} 가 기록 {_manifest.Width}x{_manifest.Height} 와 다르다 — 입력 위치가 어긋난다");
 
             int nextMarker = 0;
+            // Addressables 로딩은 이름으로 짝짓는다(LoadMatcher). 기록의 신호와 이름이 안 맞으면(이전 기록·이름 한도 초과) 개수로만.
+            string[] markerLoad = LoadNamesByMarker(_manifest);
+            var loads = new LoadMatcher(markerLoad != null ? _manifest.Loads.Select(l => l.Name) : null, _manifest.Fps);
+            int loadsSeen = 0;
             float holdStarted = -1f;
             int heldKey = -1;   // 지금 기다리는 대상(동기 지점 번호, 서버 응답은 -2) — 대상이 바뀌면 기다린 시간을 다시 잰다
             int firstInput = _manifest.EventCounts.FindIndex(c => c > 0);
@@ -362,6 +409,8 @@ namespace CookApps.LocaleCapture
             while (Frame < TotalFrames && !_finished)
             {
                 yield return FrameEnd;
+                if (BeforeStartFrame) continue;
+                NoteEngineStart();
                 if (Frame >= _fastUntil) Pace();
                 Application.targetFrameRate = Frame + 1 < _fastUntil ? -1 : _manifest.Fps;
                 if (_finished) break;
@@ -371,21 +420,36 @@ namespace CookApps.LocaleCapture
 
                 _drain.Clear();
                 CaptureMarkers.Drain(_drain);
+                int addrHits = 0;
                 foreach (string hit in _drain)
                 {
+                    if (hit == AddrSignal) { addrHits++; continue; }
                     if (!_arrived.TryGetValue(hit, out Queue<int> q)) _arrived[hit] = q = new Queue<int>();
                     q.Enqueue(Frame);
                 }
                 CaptureMarkers.DrainLoaded(Frame, CaptureVerify.Loads, MaxLoadNames);
+                // 끝난 Addressables 로딩은 이름과 함께 넘긴다(신호와 이름은 같은 순서로 쌓인다). 이름 수가 다르면 이름 없이.
+                List<ReplayManifest.Marker> loaded = CaptureVerify.Loads;
+                int named = loaded != null ? loaded.Count - loadsSeen : 0;
+                for (int i = 0; i < addrHits; i++) loads.Arrive(named == addrHits ? loaded[loadsSeen + i].Name : null, Frame);
+                if (loaded != null) loadsSeen = loaded.Count;
 
                 // 기록 때 이 프레임까지 끝났던 로딩이 아직이면 게임 시간을 멈추고 기다린다(로딩 시간 차이 흡수).
                 bool hold = false;
                 while (nextMarker < _manifest.Markers.Count && _manifest.Markers[nextMarker].Frame <= Frame)
                 {
                     ReplayManifest.Marker marker = _manifest.Markers[nextMarker];
-                    if (_arrived.TryGetValue(marker.Name, out Queue<int> q) && q.Count > 0)
+                    bool arrived;
+                    int arrivedFrame = 0;
+                    if (marker.Name == AddrSignal) arrived = loads.TryMatch(markerLoad?[nextMarker], marker.Frame, out arrivedFrame);
+                    else
                     {
-                        CaptureVerify.Arrived(marker.Name, marker.Frame, Math.Min(q.Dequeue(), Frame));
+                        arrived = _arrived.TryGetValue(marker.Name, out Queue<int> q) && q.Count > 0;
+                        if (arrived) arrivedFrame = q.Dequeue();
+                    }
+                    if (arrived)
+                    {
+                        CaptureVerify.Arrived(marker.Name, marker.Frame, Math.Min(arrivedFrame, Frame));
                         nextMarker++;
                         continue;
                     }
@@ -437,6 +501,7 @@ namespace CookApps.LocaleCapture
                     else
                     {
                         CaptureVerify.LoadTimedOut(Frame, waitingFor, limit);
+                        if (waitingFor == AddrSignal) loads.Skip(markerLoad?[nextMarker]);
                         nextMarker++;
                         // 녹화 언어가 아닌 패스에서 게임이 언어 시스템 초기화를 기다리다 서면 로딩 신호가 더 안 온다 — 초기화를 끝내 준다.
                         if (!string.IsNullOrEmpty(Request.Locale) && LocalizationBridge.FinishPendingInitialization())
@@ -613,6 +678,22 @@ namespace CookApps.LocaleCapture
         }
 
         private static bool IsSceneSignal(string marker) => marker.StartsWith("scene:", StringComparison.Ordinal) || marker == "async:AsyncOperation";
+
+        private const string AddrSignal = "addr";   // Addressables 로딩 완료 동기 지점
+
+        // 기록의 "addr" 동기 지점마다 그 로딩의 이름(Loads 와 같은 순서). 개수나 프레임이 안 맞으면 null.
+        private static string[] LoadNamesByMarker(ReplayManifest manifest)
+        {
+            var names = new string[manifest.Markers.Count];
+            int next = 0;
+            for (int i = 0; i < manifest.Markers.Count; i++)
+            {
+                if (manifest.Markers[i].Name != AddrSignal) continue;
+                if (next >= manifest.Loads.Count || manifest.Loads[next].Frame != manifest.Markers[i].Frame) return null;
+                names[i] = manifest.Loads[next++].Name;
+            }
+            return next == manifest.Loads.Count ? names : null;
+        }
 
         // ── 프레임 페이싱·입력 ─────────────────────────────────────────────────
 

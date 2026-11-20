@@ -49,8 +49,11 @@ namespace CookApps.LocaleCapture.Editor
             CoreProblems.Clear();
             RiskyProblems.Clear();
             PatchedMethods = 0;
+            _focusBlocked = 0;
+            lock (_transports) _transports.Clear();
             var watch = System.Diagnostics.Stopwatch.StartNew();
             _harmony = new Harmony(Id);
+            NetworkTape.TransportPatcher = PatchTransport;
             // 패치 코드를 DynamicMethod 로 만든다. 기본(MethodBuilder)은 미완성 타입이 든 동적 어셈블리를 남겨,
             // 모든 어셈블리의 GetTypes() 를 도는 게임 코드(디버그 패널 등)가 ReflectionTypeLoadException 으로 죽는다.
             string dmdType = Environment.GetEnvironmentVariable("MONOMOD_DMD_TYPE");
@@ -58,7 +61,7 @@ namespace CookApps.LocaleCapture.Editor
             try { InstallAll(); }
             finally { Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", dmdType); }
             InstallMs = watch.Elapsed.TotalMilliseconds;
-            Debug.Log($"[LocaleCapture] 런타임 패치 {PatchedMethods}곳 ({InstallMs:F0}ms)" +
+            Debug.Log($"[LocaleCapture] 런타임 패치 {PatchedMethods}곳 ({InstallMs:F0}ms), 앱 포커스 알림 막음 {_focusBlocked}곳" +
                       (Problems.Count > 0
                           ? $", 못 바꾼 곳 {Problems.Count}건(재현에 영향 줄 수 있는 것 {RiskyProblems.Count + CoreProblems.Count}건): {string.Join(" / ", CoreProblems.Concat(RiskyProblems).Concat(Problems).Take(5))}"
                           : ""));
@@ -116,6 +119,25 @@ namespace CookApps.LocaleCapture.Editor
             MethodInfo addContinuation = uniTaskLoop == null ? null : AccessTools.Method(uniTaskLoop, "AddContinuation");
             if (addContinuation != null)
                 Try("UniTask AddContinuation", () => _harmony.Patch(addContinuation, prefix: new HarmonyMethod(typeof(CapturePatches), nameof(UniTaskContinuationPrefix))));
+            // Application.focusChanged 를 듣는 코드(엔진 모듈 포함)에도 넘기지 않는다
+            Try("앱 포커스 알림", () => _harmony.Patch(AccessTools.Method(typeof(Application), "InvokeFocusChanged")
+                    ?? throw new MissingMethodException("Application.InvokeFocusChanged"),
+                prefix: new HarmonyMethod(typeof(CapturePatches), nameof(FocusPrefix))));
+            // uGUI 가 배치를 다시 계산하는 자리 → LayoutTrace(재생 패스에서 배치 때문에 UI 가 움직인 프레임을 남긴다 — 영상 비교가 본다).
+            // 재현에는 영향이 없어 못 걸어도 핵심 실패로 치지 않는다(그 테이크는 영상 비교가 배치 차이를 가려내지 못할 뿐이다).
+            Type layoutRebuilder = AccessTools.TypeByName("UnityEngine.UI.LayoutRebuilder");
+            if (layoutRebuilder != null)
+            {
+                try
+                {
+                    const BindingFlags statics = BindingFlags.Static | BindingFlags.Public;
+                    _harmony.Patch(AccessTools.Method(layoutRebuilder, "Rebuild") ?? throw new MissingMethodException("LayoutRebuilder.Rebuild"),
+                        prefix: new HarmonyMethod(typeof(LayoutTrace).GetMethod(nameof(LayoutTrace.RebuildPrefix), statics)),
+                        postfix: new HarmonyMethod(typeof(LayoutTrace).GetMethod(nameof(LayoutTrace.RebuildPostfix), statics)));
+                    PatchedMethods++;
+                }
+                catch (Exception e) { Problems.Add($"UI 배치 추적: {e.GetBaseException().Message} — 영상 비교가 언어별 배치 차이를 가려내지 못한다"); }
+            }
             PropertyInfo activation = typeof(AsyncOperation).GetProperty(nameof(AsyncOperation.allowSceneActivation));
             Try("씬 활성화 지연", () =>
             {
@@ -127,7 +149,9 @@ namespace CookApps.LocaleCapture.Editor
         public static void Uninstall()
         {
             if (_harmony == null) return;
+            NetworkTape.TransportPatcher = null;
             try { _harmony.UnpatchAll(Id); } catch (Exception e) { Debug.LogWarning("[LocaleCapture] 패치 해제 실패: " + e.Message); }
+            lock (_transports) _transports.Clear();
             _harmony = null;
         }
 
@@ -158,6 +182,7 @@ namespace CookApps.LocaleCapture.Editor
             S(typeof(Screen).GetProperty(nameof(Screen.cutouts))?.GetGetMethod(), "get_" + nameof(CaptureScreen.Cutouts), typeof(CaptureScreen));
             // 기기 언어는 패키지(Unity Localization 의 시스템 언어 선택 등)까지 — 게임이 처음부터 그 언어로 뜨면 강제 전환이 필요 없다
             S(typeof(Application).GetProperty(nameof(Application.systemLanguage))?.GetGetMethod(), "get_" + nameof(CaptureClock.SystemLanguage));
+            S(typeof(Application).GetProperty(nameof(Application.isFocused))?.GetGetMethod(), "get_" + nameof(CaptureClock.IsFocused));
             S(typeof(Time).GetProperty(nameof(Time.unscaledDeltaTime))?.GetGetMethod(), "get_" + nameof(CaptureClock.UnscaledDeltaTime));
             S(typeof(Time).GetProperty(nameof(Time.unscaledTime))?.GetGetMethod(), "get_" + nameof(CaptureClock.UnscaledTime));
             S(typeof(Time).GetProperty(nameof(Time.unscaledTimeAsDouble))?.GetGetMethod(), "get_" + nameof(CaptureClock.UnscaledTimeAsDouble));
@@ -255,6 +280,7 @@ namespace CookApps.LocaleCapture.Editor
                 bool plugin = project && asm.sourceFiles.All(f => !f.StartsWith("Assets/", StringComparison.Ordinal) || f.StartsWith("Assets/Plugins/", StringComparison.Ordinal));
                 if (IsLoaderAssembly(asm.name)) PatchAssembly(assembly, _loader, "loader");
                 else PatchAssembly(assembly, project ? _full : _shared, project ? "full" : "shared", project && !plugin);
+                BlockFocusMessages(assembly);
             }
 
             // Assets 아래 미리 빌드된 DLL(DOTween 등)도 실시간·입력·난수 호출을 바꾼다
@@ -268,6 +294,7 @@ namespace CookApps.LocaleCapture.Editor
                 if (string.IsNullOrEmpty(location) || !System.IO.Path.GetFullPath(location).StartsWith(assets, StringComparison.OrdinalIgnoreCase)) continue;
                 player.Add(name);
                 PatchAssembly(assembly, _shared, "shared");
+                BlockFocusMessages(assembly);
             }
 
             // UI Toolkit 은 엔진 모듈이라 위 목록에 없다. 런타임 패널의 시계(전환 애니메이션·예약 실행·더블 클릭 판정)는 실제 시계를,
@@ -276,6 +303,74 @@ namespace CookApps.LocaleCapture.Editor
             System.Reflection.Assembly uiToolkit = AccessTools.TypeByName("UnityEngine.UIElements.VisualElement")?.Assembly;
             if (uiToolkit != null && done.Add(uiToolkit.GetName().Name)) PatchAssembly(uiToolkit, _shared, "shared");
             ThreadGate.PlayerAssemblies = player;
+        }
+
+        // 앱이 포커스를 잃거나 되찾을 때 스크립트가 받는 알림(OnApplicationFocus·OnApplicationPause)을 세션 동안 막는다.
+        // 녹화·재생 중에 다른 프로그램을 쓰면 이 알림이 오고, 게임은 여기서 서버 시각을 다시 맞추거나 화면을 새로 고친다 — 요청이 하나
+        // 더 나가 그 뒤 응답 순서가 밀리고 플레이가 갈린다. 기록에 남지 않는 입력이라 재생에서 되살릴 수도 없다. 그래서 기록 때도 재생 때도
+        // 게임은 "계속 포커스가 있다" 고 본다(Application.isFocused 도 true, uGUI EventSystem 의 포커스 상태도 그대로).
+        private static void BlockFocusMessages(System.Reflection.Assembly assembly)
+        {
+            foreach (MethodBase method in FocusMessages(assembly))
+            {
+                try
+                {
+                    bool coroutine = method is MethodInfo info && info.ReturnType != typeof(void);
+                    _harmony.Patch(method, prefix: new HarmonyMethod(typeof(CapturePatches), coroutine ? nameof(FocusCoroutinePrefix) : nameof(FocusPrefix)));
+                    PatchedMethods++;
+                    _focusBlocked++;
+                }
+                catch (Exception e)
+                {
+                    Problems.Add($"{method.DeclaringType?.FullName}.{method.Name}: {e.GetBaseException().Message} — 앱 포커스 알림을 그대로 받는다");
+                }
+            }
+        }
+
+        // 어셈블리 안의 OnApplicationFocus·OnApplicationPause. 훑은 결과는 호출 위치 패치처럼 Library 에 둔다.
+        private static List<MethodBase> FocusMessages(System.Reflection.Assembly assembly)
+        {
+            Module module = assembly.ManifestModule;
+            string key = $"{assembly.GetName().Name}|{module.ModuleVersionId}|focus";
+            var found = new List<MethodBase>();
+            if (TargetCache.TryGet(key, out List<int> tokens))
+            {
+                try
+                {
+                    foreach (int token in tokens) found.Add(module.ResolveMethod(token));
+                    return found;
+                }
+                catch { found.Clear(); }
+            }
+            Type[] types;
+            try { types = assembly.GetTypes(); }
+            catch (ReflectionTypeLoadException e) { types = e.Types.Where(t => t != null).ToArray(); }
+            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+            foreach (Type type in types)
+            {
+                if (type.ContainsGenericParameters || !typeof(MonoBehaviour).IsAssignableFrom(type)) continue;
+                MethodInfo[] methods;
+                try { methods = type.GetMethods(all); }
+                catch { continue; }
+                foreach (MethodInfo method in methods)
+                    if ((method.Name == "OnApplicationFocus" || method.Name == "OnApplicationPause") && !method.IsAbstract && !method.ContainsGenericParameters &&
+                        (method.ReturnType == typeof(void) || method.ReturnType == typeof(System.Collections.IEnumerator)))
+                        found.Add(method);
+            }
+            TargetCache.Set(key, found.Select(m => m.MetadataToken).ToList());
+            return found;
+        }
+
+        private static int _focusBlocked;
+
+        private static bool FocusPrefix() => !CaptureClock.Active;
+
+        // 코루틴으로 쓴 알림(IEnumerator OnApplicationPause)은 빈 코루틴으로 바꾼다.
+        private static bool FocusCoroutinePrefix(ref System.Collections.IEnumerator __result)
+        {
+            if (!CaptureClock.Active) return true;
+            __result = Enumerable.Empty<object>().GetEnumerator();
+            return false;
         }
 
         // kind: 바꿔 끼울 목록 — full(프로젝트 코드)·shared(패키지·DLL)·loader(로딩 코드)
@@ -459,14 +554,64 @@ namespace CookApps.LocaleCapture.Editor
             _harmony.Patch(method, prefix: new HarmonyMethod(typeof(CapturePatches), nameof(HttpPrefix)), postfix: new HarmonyMethod(typeof(CapturePatches), nameof(HttpPostfix)));
         }
 
-        private static bool HttpPrefix(HttpRequestMessage request, ref Task<HttpResponseMessage> __result)
+        private static bool HttpPrefix(HttpMessageInvoker __instance, HttpRequestMessage request, ref Task<HttpResponseMessage> __result)
         {
-            if (!NetworkTape.TryReplay(request, out Task<HttpResponseMessage> taped)) return true;
+            if (!NetworkTape.TryReplay(__instance, request, out Task<HttpResponseMessage> taped)) return true;
             __result = taped;
             return false;
         }
 
         private static void HttpPostfix(HttpRequestMessage request, ref Task<HttpResponseMessage> __result) => __result = NetworkTape.Record(request, __result);
+
+        // 전송 단계: HttpClient 핸들러 줄의 맨 아래(실제로 서버와 주고받는 핸들러)의 SendAsync. 어느 타입인지는 첫 요청이 나갈 때에야
+        // 알 수 있어, NetworkTape 가 그때 타입을 알려 주면 건다(같은 메서드는 한 번만). 못 걸면 false — 그 요청은 바깥에서만 기록·재생한다.
+        private static readonly HashSet<MethodBase> _transports = new HashSet<MethodBase>();
+
+        private static bool PatchTransport(Type type)
+        {
+            if (_harmony == null || type == null) return false;
+            try
+            {
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                Type[] signature = { typeof(HttpRequestMessage), typeof(CancellationToken) };
+                MethodInfo method = type.GetMethod("SendAsync", flags, null, signature, null);
+                // 물려받기만 한 타입이면 실제로 구현한 쪽 것을 건다
+                if (method != null && method.DeclaringType != type) method = method.DeclaringType.GetMethod("SendAsync", flags | BindingFlags.DeclaredOnly, null, signature, null);
+                if (method == null || method.IsAbstract) throw new MissingMethodException(type.FullName + ".SendAsync");
+                lock (_transports)
+                {
+                    if (_transports.Contains(method)) return true;
+                    string dmdType = Environment.GetEnvironmentVariable("MONOMOD_DMD_TYPE");
+                    Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", "dynamicmethod");
+                    try
+                    {
+                        _harmony.Patch(method, prefix: new HarmonyMethod(typeof(CapturePatches), nameof(TransportPrefix)),
+                            postfix: new HarmonyMethod(typeof(CapturePatches), nameof(TransportPostfix)));
+                    }
+                    finally { Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", dmdType); }
+                    _transports.Add(method);
+                }
+                PatchedMethods++;
+                Debug.Log($"[LocaleCapture] 전송 단계 {type.FullName}.SendAsync 에서 서버 응답을 기록·재생한다");
+                return true;
+            }
+            catch (Exception e)
+            {
+                string problem = $"{type.FullName}.SendAsync: {e.GetBaseException().Message} — 서버 응답을 통신 코드 바깥에서 기록·재생한다(통신 코드가 응답에서 따로 꺼내 쓰는 값은 재생되지 않는다)";
+                lock (Problems) Problems.Add(problem);
+                Debug.LogWarning("[LocaleCapture] 전송 단계를 걸지 못했다 — " + problem);
+                return false;
+            }
+        }
+
+        private static bool TransportPrefix(HttpRequestMessage __0, ref Task<HttpResponseMessage> __result)
+        {
+            if (!NetworkTape.TryTransport(__0, out Task<HttpResponseMessage> taped)) return true;
+            __result = taped;
+            return false;
+        }
+
+        private static void TransportPostfix(HttpRequestMessage __0, ref Task<HttpResponseMessage> __result) => __result = NetworkTape.RecordTransport(__0, __result);
 
         private static void WebPrefix(UnityWebRequest __instance) => NetworkTape.BeforeWebRequest(__instance);
 

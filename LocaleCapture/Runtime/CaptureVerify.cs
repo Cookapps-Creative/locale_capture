@@ -48,6 +48,7 @@ namespace CookApps.LocaleCapture
             public List<string> Differences = new List<string>();   // 프레임 순으로 처음 몇 건 "프레임 [분류] 내용"
             public int ServerReplayed, ServerLive, ServerMissed;
             public int ServerFetched;                // 실제 서버에서 받아 온 응답 수 — 있으면 그 패스를 받아 둔 응답으로 다시 뽑는다
+            public int ServerPiped;                  // 재생한 응답 중 통신 코드를 그대로 돌려 답한 수(전송 단계의 원본 응답으로). 0 이면 통신 코드가 건너뛰어졌다
             public int InputQueued, InputDelivered;   // 재생한 입력 수 / 게임 입력 시스템이 처리한 수
             public string InputDevices;
             public List<string> TapMismatches = new List<string>();   // 녹화와 다른 대상을 누른 곳
@@ -58,6 +59,10 @@ namespace CookApps.LocaleCapture
             public List<string> HoldLog = new List<string>();   // 로딩 대기가 걸린 곳 "프레임 신호 ×대기 프레임 수"
             public List<ReplayManifest.Marker> Loads = new List<ReplayManifest.Marker>();   // 재생에서 끝난 Addressables 로딩(프레임·이름, 진단용)
             public List<string> Shifts = new List<string>();   // 기록과 다른 프레임에 끝난 로딩 "신호 기록→재생"
+            // 이 패스에서 UI 배치 계산으로 자리·크기가 바뀐 프레임. 녹화와 비교하지 않는다(언어마다 다른 게 정상) — 영상 비교가
+            // 언어 영상끼리 다르게 바뀐 프레임이 배치 차이인지 가리는 데 쓴다.
+            public List<LayoutTrace.Move> Layouts = new List<LayoutTrace.Move>();
+            public bool LayoutTraced;   // 배치를 끝까지 쟀나(이전 버전으로 뽑았거나 도중에 꺼졌으면 false — 영상 비교가 배치 차이를 가리지 않는다)
             public int StateMismatchFrames;
             public string StateHash;   // 재생 내내의 난수 상태 요약 — 패스끼리 같으면 같은 플레이
             public List<Issue> Issues = new List<Issue>();
@@ -267,6 +272,9 @@ namespace CookApps.LocaleCapture
             report.ServerLive = NetworkTape.Live;
             report.ServerMissed = NetworkTape.Missed;
             report.ServerFetched = NetworkTape.Fetched;
+            report.ServerPiped = NetworkTape.Piped;
+            report.LayoutTraced = LayoutTrace.Active;
+            report.Layouts = LayoutTrace.End();
             try
             {
                 string dir = Path.Combine(directory, Folder);

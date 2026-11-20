@@ -18,27 +18,44 @@ namespace CookApps.LocaleCapture
         private int _played; // 지금까지 큐에 넣은 이벤트 수(프레임 마커 제외)
         private int _queued, _delivered;   // 가상 장치로 보낸 수 / 입력 시스템이 실제로 처리한 수(어긋남 진단)
         private string _current;           // 첫 입력 때 게임이 보는 현재 터치·마우스 장치
+        private readonly IReadOnlyList<ReplayManifest.Device> _planned;   // 기록 때 만든 가상 장치(순서대로). 없으면(이전 기록) 입력 기록의 장치 목록
+        private int _nextPlanned;
 
-        public InputTracePlayer(string tracePath, IReadOnlyList<int> eventCounts)
+        public InputTracePlayer(string tracePath, IReadOnlyList<int> eventCounts, IReadOnlyList<ReplayManifest.Device> devices = null)
         {
             _trace = new InputEventTrace();
             _trace.ReadFrom(tracePath);
             _eventCounts = eventCounts;
 
-            // 실제 장치는 끄고, 기록 장치마다 같은 레이아웃의 가상 장치를 만든다.
+            // 실제 장치는 끄고, 기록 때와 같은 가상 장치를 같은 순서로 만든다.
             DisableRealDevices();
-            foreach (InputEventTrace.DeviceInfo info in _trace.deviceInfos)
-            {
-                try
-                {
-                    InputDevice device = InputSystem.AddDevice(info.layout, "LocaleCapture." + info.layout);
-                    _deviceMap[info.deviceId] = device.deviceId;
-                    _virtualDevices.Add(device);
-                }
-                catch (Exception e) { UnityEngine.Debug.LogWarning($"[LocaleCapture] 장치 생성 실패 {info.layout}: {e.Message}"); }
-            }
+            _planned = devices != null && devices.Count > 0 ? devices : null;
+            if (_planned != null) CreatePlanned(1);   // 세션 시작 때 만들어진 것
+            else
+                foreach (InputEventTrace.DeviceInfo info in _trace.deviceInfos) Create(info.deviceId, info.layout);
             _events = _trace.GetEnumerator();
             InputSystem.onEvent += OnEvent;
+        }
+
+        private void Create(int recordedId, string layout)
+        {
+            try
+            {
+                InputDevice device = InputSystem.AddDevice(layout, "LocaleCapture." + layout);
+                _deviceMap[recordedId] = device.deviceId;
+                _virtualDevices.Add(device);
+            }
+            catch (Exception e) { UnityEngine.Debug.LogWarning($"[LocaleCapture] 장치 생성 실패 {layout}: {e.Message}"); }
+        }
+
+        // 기록에서 세션 프레임 frame 전에 만들어진 장치를 만든다(세션 도중에 붙은 장치는 그 입력이 처음 들어오기 직전에).
+        private void CreatePlanned(int frame)
+        {
+            while (_planned != null && _nextPlanned < _planned.Count && _planned[_nextPlanned].Frame < frame)
+            {
+                ReplayManifest.Device d = _planned[_nextPlanned++];
+                Create(d.Id, d.Layout);
+            }
         }
 
         private void OnEvent(InputEventPtr e, InputDevice device)
@@ -60,6 +77,7 @@ namespace CookApps.LocaleCapture
         // 프레임 frame 의 이벤트를 모두 큐에 넣는다. 다음 입력 갱신에서 처리된다.
         public void QueueFrame(int frame)
         {
+            CreatePlanned(frame);
             int until = frame < _eventCounts.Count ? _eventCounts[frame] : int.MaxValue;
             while (_played < until && _events.MoveNext())
             {
