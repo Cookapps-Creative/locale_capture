@@ -74,5 +74,35 @@ namespace CookApps.LocaleCapture
             _pipeline = null;
             _renderScale = null;
         }
+
+        // 지금 URP 렌더 스케일(URP 가 아니면 -1). 위의 저장 값은 정적 필드라 패스 도중 도메인이 다시 올라오면 지워진다 —
+        // 그러면 낮춘 값(0.1)이 에셋에 남아 그 뒤 영상이 모두 흐리게 찍힌다. 그래서 에디터 쪽이 작업을 시작할 때 이 값을 작업 상태에 적어 두고,
+        // 끝날 때(중단·다음 실행 포함) Restore 로 되돌린다.
+        public static float CurrentScale()
+        {
+            try
+            {
+                RenderPipelineAsset asset = GraphicsSettings.currentRenderPipeline;
+                PropertyInfo prop = asset?.GetType().GetProperty("renderScale", BindingFlags.Public | BindingFlags.Instance);
+                return prop != null && prop.PropertyType == typeof(float) && prop.CanRead ? (float) prop.GetValue(asset) : -1f;
+            }
+            catch { return -1f; }
+        }
+
+        public static void Restore(float scale)
+        {
+            _low = false;
+            _pipeline = null;
+            _renderScale = null;
+            if (scale < 0f) return;
+            try
+            {
+                RenderPipelineAsset asset = GraphicsSettings.currentRenderPipeline;
+                PropertyInfo prop = asset?.GetType().GetProperty("renderScale", BindingFlags.Public | BindingFlags.Instance);
+                if (prop == null || prop.PropertyType != typeof(float) || !prop.CanWrite) return;
+                if (Mathf.Abs((float) prop.GetValue(asset) - scale) > 0.0001f) prop.SetValue(asset, scale);
+            }
+            catch (Exception e) { Debug.LogWarning("[LocaleCapture] 렌더 스케일을 되돌리지 못했다: " + e.Message); }
+        }
     }
 }

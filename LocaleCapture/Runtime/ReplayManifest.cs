@@ -23,7 +23,9 @@ namespace CookApps.LocaleCapture
         //  4 부터: Addressables 에셋 데이터베이스 모드의 가짜 로딩 지연(Simulated Load Delay) 없이 기록한다.
         //  5 부터: Addressables 의 연쇄 로딩(콜백에서 다음 로드)을 한 프레임에 끝내며 기록한다.
         //  6 부터: 기록 시작 때 실제 장치마다 가상 장치를 미리 만들고 그 목록을 남긴다(Devices). 재생도 같은 장치를 같은 순서로 만든다.
-        public const int CurrentTraceVersion = 6;
+        //  7 부터: 스크롤 목록 안의 입력 받는 UI 를 목록별로 따로 세고 줄 크기를 남긴다(HitTrace.Event 의 Scroll·Shape·Size).
+        //          목록의 내용·보이는 영역 크기가 바뀐 프레임도 남긴다(ListEvents).
+        public const int CurrentTraceVersion = 7;
         public int TraceVersion;
         public int SeedScheme;   // new Random() 시드 방식(CaptureClock). 재생은 기록 때 방식을 따른다
 
@@ -55,6 +57,10 @@ namespace CookApps.LocaleCapture
         public List<UiTrace.Event> UiEvents = new List<UiTrace.Event>();
         // 입력을 받을 수 있는 UI(버튼·카드 등 처리기)가 켜지고 꺼진 프레임. 재생과 비교해 흐름이 밀린 첫 프레임을 찾는다.
         public List<HitTrace.Event> HitEvents = new List<HitTrace.Event>();
+        // 스크롤 목록의 내용·보이는 영역 크기가 바뀐 프레임. 다른 언어 패스에서 목록 안이 녹화와 달라졌을 때 줄 크기가 다른 화면인지 가리는 근거다.
+        public List<HitTrace.ListState> ListEvents = new List<HitTrace.ListState>();
+        public bool HitFailed;
+        public int HitFailedFrame;   // (HitFailed) 기록 중 입력 받는 UI 추적이 꺼진 프레임(안 꺼졌으면 -1) — 그 뒤는 HitEvents 가 비어 있어 비교하지 않는다
         // new Random() 이 만들어진 프레임과 만든 코드. 덱 셔플처럼 난수를 새로 만드는 지점이 같은 프레임이었는지 본다.
         public List<CaptureClock.RandomCreation> RandomCreations = new List<CaptureClock.RandomCreation>();
         // 작업 스레드에서 메인 스레드로 넘어온 이어받기(await Task.Run 등)를 넘긴 프레임과 그 코드. 재생은 같은 프레임에 넘긴다.

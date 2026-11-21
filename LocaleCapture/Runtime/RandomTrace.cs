@@ -19,7 +19,7 @@ namespace CookApps.LocaleCapture
             public string Caller;
         }
 
-        private const int MaxCalls = 5000;
+        internal const int MaxCalls = 5000;
         private static List<Call> _calls;
         private static int _frame;
         private static Random.State _main, _sound;

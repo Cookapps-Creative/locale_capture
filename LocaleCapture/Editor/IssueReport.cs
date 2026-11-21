@@ -83,6 +83,20 @@ namespace CookApps.LocaleCapture.Editor
                     sb.AppendLine($"- 달라진 곳(프레임 순, 로딩 시점 차이 포함) — 로딩 제외 모두 {r.DifferenceCount}건:");
                     foreach (string d in r.Differences.Take(MaxDifferences)) sb.AppendLine($"  - {Shorten(d, 240)}");
                 }
+                if (r.RepeatedFrames > 0) sb.AppendLine($"- 읽지 못해 직전 프레임으로 채운 영상 프레임 {r.RepeatedFrames}장(처음 프레임 {r.RepeatedFirstFrame})");
+                if (r.UiCheckStopped) sb.AppendLine($"- 입력 받는 UI 추적이 프레임 {r.UiComparedUntil} 에서 꺼져 그 뒤의 UI 켜짐·꺼짐은 비교하지 못했다");
+                if (r.LocaleSwitches > 0) sb.AppendLine($"- 프레임 {r.LocaleSwitchFrame} 에 게임 언어가 {r.LocaleSwitchedFrom} 여서 {r.Locale} 로 바꿨다({r.LocaleSwitches}번)");
+                if (r.ListWarnings != null)
+                    foreach (string warning in r.ListWarnings.Take(MaxMismatches)) sb.AppendLine($"- 확인할 곳: {Shorten(warning, 300)}");
+                if (r.SlackCount > 0 && r.Slacks != null)
+                {
+                    sb.AppendLine($"- 녹화와 {CaptureVerify.Slack}프레임 안의 차이로 보인 곳 {r.SlackCount}곳(다름으로 치지 않음):");
+                    foreach (string slack in r.Slacks) sb.AppendLine($"  - {Shorten(slack, 240)}");
+                }
+                if (r.LayoutSkips != null)
+                    foreach (string skip in r.LayoutSkips.Take(MaxMismatches)) sb.AppendLine($"- 비교에서 뺀 곳: {Shorten(skip, 300)}");
+                if (r.TapNotes != null)
+                    foreach (string note in r.TapNotes.Take(MaxMismatches)) sb.AppendLine($"- 비교에서 뺀 곳: 프레임 {Shorten(note, 300)}");
                 if (r.TraceVersion == 0)
                 {
                     sb.AppendLine("- 이전 형식 기록이라 입력 받는 UI·난수 생성 프레임은 비교하지 못했다");

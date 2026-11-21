@@ -429,6 +429,15 @@ namespace CookApps.LocaleCapture
             // 언어 요청인데 이 언어로는 처음이고 녹화에 맞출 요청도 없다 — 실제 서버에서 받고(받는 동안 게임 시간을 멈춘다) 언어별 테이프에 남긴다.
             if (live) { Live++; return new Entry { Method = method, Url = url, RequestFrame = _frame, LatencyFrames = 0, Fetch = true }; }
             Missed++;
+            // 기록에 없는 요청(예: 녹화 땐 저장된 캐시를 써서 안 나갔는데, 다른 언어라 캐시 주소가 달라 나간 요청)을 이 언어로 앞서 받아 둔 것이
+            // 있으면 서버 없이 그걸 쓴다. 아래 "기록보다 많이 나간 요청" 보다 먼저 본다 — 받아 둔 응답도 _lastByKey 에 들어 있어,
+            // 순서가 바뀌면 받아 둔 응답으로 다시 뽑는 패스가 늘 "기록보다 많이 나간 요청" 으로 다름이 된다.
+            var now = new Entry { RequestFrame = _frame, LatencyFrames = 0 };
+            if (_liveQueues.TryGetValue(key, out Queue<Entry> kept) && kept.Count > 0)
+            {
+                CaptureVerify.Add(_frame, "서버", "기록에 없는 요청(이 언어로 받아 둔 응답으로 답함): " + Short(key));
+                return kept.Dequeue().WithTiming(now);
+            }
             // 같은 요청이 기록보다 한 번 더 나간 것이면 실제 서버로 보내지 않는다 — 연결 대기 화면이 끼고, 실제 계정이 바뀔 수 있다.
             if (_lastByKey.TryGetValue(key, out Entry last))
             {
@@ -436,12 +445,9 @@ namespace CookApps.LocaleCapture
                 CaptureVerify.ServerDiffered(_frame, "기록보다 많이 나간 요청(마지막 기록 응답으로 대신): " + Short(key));
                 return last;
             }
-            // 기록에 없는 요청(예: 녹화 땐 저장된 캐시를 써서 안 나갔는데, 다른 언어라 캐시 주소가 달라 나간 요청).
             // 녹화에선 기다림 없이 지나간 자리라, 응답이 올 때까지 게임 시간을 멈춰 그 뒤 흐름이 밀리지 않게 한다.
-            // 이 언어로 받아 둔 응답이 있으면 서버 없이 그걸 쓰고, 없으면 실제 서버에서 받아 언어별 테이프에 남긴다.
+            // 실제 서버에서 받아 언어별 테이프에 남긴다.
             CaptureVerify.Add(_frame, "서버", "기록에 없는 요청(응답까지 게임 시간을 멈춤): " + Short(key));
-            var now = new Entry { RequestFrame = _frame, LatencyFrames = 0 };
-            if (_liveQueues.TryGetValue(key, out Queue<Entry> kept) && kept.Count > 0) return kept.Dequeue().WithTiming(now);
             if (_warned.Add(key)) Debug.LogWarning($"[LocaleCapture] 기록에 없는 서버 요청이라 실제 서버에서 받아 온다(받는 동안 게임 시간을 멈춘다): {key}");
             return new Entry { Method = method, Url = url, RequestFrame = _frame, LatencyFrames = 0, Fetch = true };
         }
@@ -1125,11 +1131,15 @@ namespace CookApps.LocaleCapture
                     try
                     {
                         Download(entry, headers, body);
+                        // 서버 오류(5xx)는 받은 것으로 치지 않는다 — 남겨 두면 다음에 이 언어로 뽑을 때마다 오류 응답이 재생된다.
+                        if (entry.Status >= 500) throw new IOException($"서버 오류 {entry.Status}");
                         lock (_liveRecorded) _liveRecorded.Add(entry);   // 다음에 이 언어로 다시 뽑을 땐 서버 없이
                     }
                     catch (Exception e)
                     {
                         Debug.LogWarning($"[LocaleCapture] 실제 서버에서 받지 못해 녹화 응답으로 대신한다({Short(Key(entry.Method, entry.Url))}): {e.Message}");
+                        // 이 언어의 응답이 아닌 것(녹화 언어의 응답이나 빈 오류)으로 답하게 된다 — 화면에 다른 언어 내용이 나올 수 있으므로 다름으로 남긴다.
+                        CaptureVerify.ServerDiffered(entry.RequestFrame, $"이 언어의 응답을 실제 서버에서 받지 못해 녹화 응답으로 대신했다({e.Message}): {Short(Key(entry.Method, entry.Url))}");
                         Entry f = timing.Fallback;
                         if (f != null) { entry.Status = f.Status; entry.Reason = f.Reason; entry.Headers = f.Headers; entry.ContentHeaders = f.ContentHeaders; entry.Body = f.Body; }
                         else entry.Status = 504;

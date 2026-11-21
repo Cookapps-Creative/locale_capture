@@ -110,7 +110,7 @@ namespace CookApps.LocaleCapture.Editor
             string message = CaptureDirector.Message;
             if (string.IsNullOrEmpty(message)) { if (!warned) Box("점검 통과", MessageType.Info); return; }
             if (message == "실패: " + CaptureDirector.Cancelled) { Box("최근 녹화 취소됨", MessageType.Info); DrawRetry(); return; }   // 직접 취소한 것은 실패가 아니다
-            // 성공 = 끝까지 녹화됐고, 녹화 시작 이후 녹화와 프레임 하나 다르게 재생된 곳이 없음. 자세한 내용은 콘솔·verify 폴더.
+            // 성공 = 끝까지 녹화됐고, 녹화 시작 이후 녹화와 다른 플레이가 된 곳("다름")이 없음. 자세한 내용은 콘솔·verify 폴더.
             bool failed = !message.StartsWith("완료") || CaptureDirector.Reports.Any(r => r.StartsWith("다름"));
             Box(failed ? "최근 녹화 실패" : "최근 녹화 성공", failed ? MessageType.Warning : MessageType.Info);
             // 중단된 까닭(인코딩 실패·기록 없음 등)은 결과 줄에 없으므로 여기서 보여 준다.

@@ -30,7 +30,6 @@ namespace CookApps.LocaleCapture.Editor
             public readonly StringBuilder Stderr = new StringBuilder();
             public WavSink Wav;
             public byte[] Scratch;      // 마지막으로 보낸 프레임(읽기 실패한 프레임은 이걸 한 번 더 보낸다)
-            public bool HasScratch;
             public volatile string Error;
         }
 
@@ -109,10 +108,16 @@ namespace CookApps.LocaleCapture.Editor
                         if (t.Scratch == null || t.Scratch.Length < length) t.Scratch = new byte[length];
                         fixed (byte* dst = t.Scratch)
                             UnsafeUtility.MemCpy(dst, NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(frame), length);
-                        t.HasScratch = true;
                         t.Pipe.Write(t.Scratch, 0, length);
                     }
-                    else if (t.HasScratch) t.Pipe.Write(t.Scratch, 0, _format.Width * _format.Height * 4);   // 같은 프레임 한 번 더
+                    else
+                    {
+                        // 같은 프레임 한 번 더. 첫 프레임부터 못 읽었으면 검은 프레임을 넣는다 — 한 장이라도 빠지면 그 언어 영상만
+                        // 소리·다른 언어 영상과 한 프레임씩 밀린다.
+                        int length = _format.Width * _format.Height * 4;
+                        if (t.Scratch == null || t.Scratch.Length < length) t.Scratch = new byte[length];
+                        t.Pipe.Write(t.Scratch, 0, length);
+                    }
                 }
                 catch (Exception e) { t.Error ??= e.Message; }   // 파이프가 끊겼다(ffmpeg 가 죽음) — 나머지 프레임은 버린다
                 finally { if (frame.IsCreated) _pool.Return(frame); }

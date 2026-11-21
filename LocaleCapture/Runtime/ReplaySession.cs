@@ -119,13 +119,14 @@ namespace CookApps.LocaleCapture
         private readonly List<TapProbe.Tap> _replayTaps = new List<TapProbe.Tap>();
         private readonly List<UiTrace.Event> _replayUi = new List<UiTrace.Event>();
         private readonly List<HitTrace.Event> _replayHits = new List<HitTrace.Event>();
+        private readonly List<HitTrace.ListState> _replayLists = new List<HitTrace.ListState>();
         private IFrameSink _sink;
         private IFrameSink _stemSink;   // 영상 패스가 함께 뽑는 스템 WAV
         private RenderTexture _rt, _copy;
         private NativeArray<float> _audio;
         private int _channels;
         private bool _audioStarted;
-        private readonly List<(AsyncGPUReadbackRequest request, NativeArray<byte> buffer)> _pending = new List<(AsyncGPUReadbackRequest, NativeArray<byte>)>();
+        private readonly List<(AsyncGPUReadbackRequest request, NativeArray<byte> buffer, int frame)> _pending = new List<(AsyncGPUReadbackRequest, NativeArray<byte>, int)>();
         private int _readbackErrors;
 
         // 동기 지점
@@ -229,7 +230,7 @@ namespace CookApps.LocaleCapture
                     _manifest.TraceVersion >= 2);
                 CaptureScreen.Begin(_manifest, false);
                 CaptureInput.BeginReplay(Path.Combine(dir, CaptureInput.FileName));
-                CaptureVerify.Begin(_passName, Request.Locale, _manifest, _replayTaps, _replayUi, _replayHits);
+                CaptureVerify.Begin(_passName, Request.Locale, _manifest, _replayTaps, _replayUi, _replayHits, _replayLists);
                 RandomTrace.Begin(new List<RandomTrace.Call>());
                 _player = new InputTracePlayer(Path.Combine(dir, _manifest.TraceFile), _manifest.EventCounts, _manifest.Devices);
                 UncapFramePacing();
@@ -299,7 +300,7 @@ namespace CookApps.LocaleCapture
                 RandomStates.Append(_manifest.RandomStates);
                 TapProbe.Check(Frame, _manifest.Taps);
                 UiTrace.Check(Frame, _manifest.UiEvents);
-                HitTrace.Check(Frame, _manifest.HitEvents);
+                HitTrace.Check(Frame, _manifest.HitEvents, _manifest.ListEvents);
                 _manifest.FrameMs.Add(FrameMs());
                 // 녹화 언어는 게임이 언어 시스템 초기화를 끝낸 뒤에만 읽는다(SelectedCode 가 초기화를 건드리지 않는다)
                 if (string.IsNullOrEmpty(_manifest.RecordedLocale) && Frame >= 60 && Frame % 30 == 0)
@@ -336,6 +337,8 @@ namespace CookApps.LocaleCapture
             if (dropped > 0)
                 throw new InvalidOperationException($"입력 기록이 한도({TraceMaxBytes >> 20}MB)를 넘어 앞쪽 입력 {dropped}개가 지워졌다 — 이 기록은 재생할 수 없다. 더 짧게 나눠 녹화한다");
             _manifest.Frames = Frame;
+            _manifest.HitFailed = HitTrace.FailedFrame >= 0;
+            _manifest.HitFailedFrame = Math.Max(0, HitTrace.FailedFrame);
             if (_relay != null) _manifest.Devices = new List<ReplayManifest.Device>(_relay.Devices);
             _manifest.RandomCreations = new List<CaptureClock.RandomCreation>(CaptureClock.Creations);
             _manifest.ThreadPosts = new List<ThreadGate.Post>(ThreadGate.Log);
@@ -464,7 +467,7 @@ namespace CookApps.LocaleCapture
                 // 로딩이 아니면 서버 응답: 기록 때 이 프레임까지 왔던 응답(언어별로 실제 서버에서 받는 것 등)이 아직이면 기다린다.
                 string waitingFor = hold ? _manifest.Markers[nextMarker].Name : null;
                 string server = waitingFor == null ? NetworkTape.Overdue() : null;
-                if (server != null) waitingFor = "서버:" + server;
+                if (server != null) waitingFor = CaptureVerify.ServerHold + server;
                 if (waitingFor != null)
                 {
                     float limit = server != null ? ServerHoldSeconds : waitingFor.StartsWith("scene:") ? SceneHoldSeconds : LoadHoldSeconds;
@@ -491,6 +494,9 @@ namespace CookApps.LocaleCapture
                         }
                         Time.captureDeltaTime = HoldDeltaTime;
                         _heldTime += HoldDeltaTime;
+                        // 기다리는 Unity 프레임에도 읽어 온 영상 프레임을 받아 간다. 안 그러면 대기 직전에 찍은 프레임의 읽기 요청이
+                        // 기다리는 사이 끝났다가 치워져, 멀쩡히 읽힌 프레임을 실패로 보고 직전 프레임으로 바꿔 넣게 된다.
+                        Flush(false);
                         continue;
                     }
                     if (server != null)
@@ -518,7 +524,7 @@ namespace CookApps.LocaleCapture
                 CaptureVerify.CheckState(Frame, _manifest.RandomStates);
                 TapProbe.Check(Frame, _replayTaps);
                 UiTrace.Check(Frame, _replayUi);
-                HitTrace.Check(Frame, _replayHits);
+                HitTrace.Check(Frame, _replayHits, _replayLists);
                 CaptureVerify.FrameTime(FrameMs());
                 Advance();
                 // 다음에 그릴 프레임(Frame)이 START 직전이면 본래 크기로 돌려, START 프레임부터 온전히 찍힌다.
@@ -570,7 +576,10 @@ namespace CookApps.LocaleCapture
             if (string.IsNullOrEmpty(Request.Locale) || Frame < EnforceLocaleFrom || Frame % 30 != 0 || !LocalizationBridge.Available) return;
             string current = LocalizationBridge.SelectedCode();
             if (current != null && !string.Equals(current, Request.Locale, StringComparison.OrdinalIgnoreCase) && LocalizationBridge.Select(Request.Locale))
+            {
                 Debug.Log($"[LocaleCapture] 선택 언어가 {current} 라서 {Request.Locale} 로 바꿨다 (프레임 {Frame})");
+                CaptureVerify.LocaleSwitched(Frame, current);   // 이 프레임 앞의 영상은 다른 언어로 찍혔을 수 있다 — 결과에 남긴다
+            }
         }
 
         private void CaptureFrame(bool audio)
@@ -579,7 +588,7 @@ namespace CookApps.LocaleCapture
             // 백버퍼 캡처는 위→아래 순서인데 MediaEncoder 는 Texture2D 처럼 아래→위를 기대한다 — GPU 에서 뒤집어 복사.
             Graphics.Blit(_rt, _copy, new Vector2(1, -1), new Vector2(0, 1));
             NativeArray<byte> buffer = _sink.Rent(_copy.width * _copy.height * 4);
-            _pending.Add((AsyncGPUReadback.RequestIntoNativeArray(ref buffer, _copy, 0), buffer));
+            _pending.Add((AsyncGPUReadback.RequestIntoNativeArray(ref buffer, _copy, 0), buffer, Frame));
             if (audio) CaptureAudio(true);
         }
 
@@ -605,7 +614,7 @@ namespace CookApps.LocaleCapture
         {
             while (_pending.Count > 0)
             {
-                (AsyncGPUReadbackRequest request, NativeArray<byte> buffer) = _pending[0];
+                (AsyncGPUReadbackRequest request, NativeArray<byte> buffer, int frame) = _pending[0];
                 if (!request.done)
                 {
                     if (!all) return;
@@ -615,7 +624,9 @@ namespace CookApps.LocaleCapture
                 if (request.hasError)
                 {
                     // 렌더 스케일·창 크기가 바뀐 직후 등에 GPU 읽기가 실패할 수 있다. 직전 프레임을 한 번 더 넣어 프레임 수를 맞춘다.
-                    if (++_readbackErrors <= 3) Debug.LogWarning("[LocaleCapture] 프레임 읽기 실패 — 직전 프레임으로 대신한다");
+                    // 끝난 읽기 요청은 엔진이 다음 프레임에 치우고, 치워진 요청도 hasError 로 보인다 — 그래서 Unity 프레임마다 받아 가야 한다(로딩 대기 중에도).
+                    if (++_readbackErrors <= 3) Debug.LogWarning($"[LocaleCapture] 프레임 {frame} 읽기 실패 — 직전 프레임으로 대신한다");
+                    CaptureVerify.FrameRepeated(frame);
                     _sink.Return(buffer);
                     _sink.RepeatVideoFrame(0);
                     continue;

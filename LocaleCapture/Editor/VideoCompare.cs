@@ -23,9 +23,11 @@ namespace CookApps.LocaleCapture.Editor
         private const int Window = 30;                // 닮은 정도 평균을 내는 프레임 수
         private const double Differ = 16.0;           // 닮은 정도가 이보다 낮으면 다른 화면(실패)
         private const double Cap = 60.0;              // 똑같은 프레임(inf)은 이 값으로
+        private const double Identical = 50.0;        // 닮은 정도의 가장 낮은 1초 평균이 이 이상이면 두 영상이 통째로 같은 화면(글자가 다르면 그 구간은 40dB 아래)
         private const double MotionRelative = 0.25;   // 두 영상의 바뀐 정도 중 큰 쪽의 이 비율까지는 글자 차이로 본다
         private const double MotionSuspect = 1.2;     // 바뀐 정도의 차이가 이 이상이면 주의
         private const double MotionDiffer = 2.5;      // 이 이상이면 다르게 흘렀다(실패)
+        private const int MotionSlack = CaptureVerify.Slack;
         private const double LayoutMinimum = 2.0;     // 한쪽에서만 배치가 움직였다고 볼 최소 차이(자리 + 크기, 캔버스 단위)
         private const int LayoutNotes = 3;            // 배치 차이를 결과에 적는 줄 수(언어 쌍마다)
         private const string StatsFile = "verify_video.tmp", MotionFileA = "verify_motion_a.tmp", MotionFileB = "verify_motion_b.tmp";
@@ -62,13 +64,22 @@ namespace CookApps.LocaleCapture.Editor
             bool flagged = false, compared = false;
             int layoutOnly = 0;
             PassLayouts layoutsA = PassLayouts.Load(directory, videos[0].locale);
+            PassLists listsA = PassLists.Load(directory, videos[0].locale);
             for (int i = 1; i < videos.Count; i++)
             {
                 string pair = $"{videos[i].locale} 영상이 {videos[0].locale} 영상과";
                 Measured m = Measure(directory, videos[0].path, videos[i].path);
                 if (m == null || m.Psnr.Count == 0) { lines.Add($"참고 — 영상 비교: {videos[i].locale} 영상을 읽지 못해 비교하지 못했다"); continue; }
                 compared = true;
-                lowest = Math.Min(lowest, LowestWindow(m.Psnr));
+                double pairLowest = LowestWindow(m.Psnr);
+                lowest = Math.Min(lowest, pairLowest);
+                // 두 언어 영상이 처음부터 끝까지 같은 화면이다 — 글자가 하나라도 나왔으면 있을 수 없다. 게임 언어가 바뀌지 않은 채 뽑힌 것일 수 있다
+                // (언어 저장 방식을 도구가 모르는 게임, 저장된 언어를 서버 응답이 덮어쓰는 게임).
+                if (pairLowest >= Identical)
+                {
+                    flagged = true;
+                    lines.Add($"주의 — 영상 비교: {pair} 처음부터 끝까지 같은 화면이다 — 화면에 글자가 전혀 없었던 것이 아니면 {videos[i].locale} 로 바뀌지 않은 채 뽑힌 것이다. 영상을 확인한다");
+                }
 
                 // 길이: 같은 플레이를 같은 프레임 수로 뽑으므로 프레임 수가 같아야 한다
                 if (m.MotionA.Count != m.MotionB.Count)
@@ -77,25 +88,37 @@ namespace CookApps.LocaleCapture.Editor
                     lines.Add($"주의 — 영상 비교: {pair} 길이가 다르다 ({m.MotionB.Count + 1} 대 {m.MotionA.Count + 1} 프레임)");
                 }
 
-                // 화면이 바뀌는 시점. 한쪽 언어에서만 배치가 움직인 프레임은 뺀다.
+                // 화면이 바뀌는 시점. 한쪽 언어에서만 배치가 움직인 프레임과, 줄 높이가 다른 스크롤 목록이 떠 있던 프레임은 뺀다.
                 PassLayouts layoutsB = PassLayouts.Load(directory, videos[i].locale);
+                PassLists listsB = PassLists.Load(directory, videos[i].locale);
                 var evidence = new Dictionary<int, (LayoutTrace.Move more, LayoutTrace.Move less)>();
+                var byList = new Dictionary<int, string>();   // 목록 때문에 뺀 프레임 → 그 목록 이름
                 bool LayoutOnly(int index)
                 {
-                    if (layoutsA == null || layoutsB == null) return false;
-                    bool moreInB = m.MotionB[index] > m.MotionA[index];
-                    PassLayouts more = moreInB ? layoutsB : layoutsA, less = moreInB ? layoutsA : layoutsB;
-                    // 시계열의 index 번째 값은 영상 프레임 index → index+1 사이의 변화 — 바뀐 화면은 영상 프레임 index+1 이다
-                    if (!OneSidedLayout(more.Moves, less.Moves, more.Start + index + 1, less.Start + index + 1, out LayoutTrace.Move a, out LayoutTrace.Move b)) return false;
-                    evidence[index] = (a, b);
+                    if (layoutsA != null && layoutsB != null)
+                    {
+                        bool moreInB = m.MotionB[index] > m.MotionA[index];
+                        PassLayouts more = moreInB ? layoutsB : layoutsA, less = moreInB ? layoutsA : layoutsB;
+                        // 시계열의 index 번째 값은 영상 프레임 index → index+1 사이의 변화 — 바뀐 화면은 영상 프레임 index+1 이다
+                        if (OneSidedLayout(more.Moves, less.Moves, more.Start + index + 1, less.Start + index + 1, out LayoutTrace.Move a, out LayoutTrace.Move b))
+                        {
+                            evidence[index] = (a, b);
+                            return true;
+                        }
+                    }
+                    // 줄 높이가 다른 스크롤 목록이 두 화면에 떠 있다 — 같은 만큼 넘겨도 한 언어만 먼저 끝에 닿거나, 줄이 다른 때에 들어온다.
+                    string list = PassLists.Differing(listsA, listsB, index + 1);
+                    if (list == null) return false;
+                    byList[index] = list;
                     return true;
                 }
                 (int suspect, int differ, double top, List<int> excused) = MotionMismatch(m.MotionA, m.MotionB, LayoutOnly);
                 widest = Math.Max(widest, top);
-                layoutOnly += excused.Count;
-                for (int k = 0; k < excused.Count && k < LayoutNotes; k++)
+                List<int> byLayout = excused.FindAll(x => evidence.ContainsKey(x)), listed = excused.FindAll(x => byList.ContainsKey(x));
+                layoutOnly += byLayout.Count;
+                for (int k = 0; k < byLayout.Count && k < LayoutNotes; k++)
                 {
-                    int index = excused[k];
+                    int index = byLayout[k];
                     bool moreInB = m.MotionB[index] > m.MotionA[index];
                     string moreLocale = moreInB ? videos[i].locale : videos[0].locale, lessLocale = moreInB ? videos[0].locale : videos[i].locale;
                     (LayoutTrace.Move more, LayoutTrace.Move less) = evidence[index];
@@ -103,8 +126,19 @@ namespace CookApps.LocaleCapture.Editor
                               $"{more.Name} 등 {more.Count}개, 움직인 양 {more.Amount:F0}({lessLocale} 는 {less.Count}개, {less.Amount:F0}). " +
                               $"언어별 화면 배치 차이라 다름으로 치지 않았다 (바뀐 정도 {m.MotionB[index]:F1} 대 {m.MotionA[index]:F1})");
                 }
-                if (excused.Count > LayoutNotes)
-                    lines.Add($"참고 — 영상 비교: {pair} 언어별 화면 배치 차이가 {excused.Count - LayoutNotes}곳 더 있다(다름으로 치지 않았다)");
+                if (byLayout.Count > LayoutNotes)
+                    lines.Add($"참고 — 영상 비교: {pair} 언어별 화면 배치 차이가 {byLayout.Count - LayoutNotes}곳 더 있다(다름으로 치지 않았다)");
+                if (listed.Count > 0)
+                {
+                    flagged = true;
+                    int index = listed[0];
+                    lines.Add($"주의 — 영상 비교: {pair} {(index + 1) / (double) fps:F1}초(영상 프레임 {index + 1})부터 {listed.Count}프레임에서 한쪽만 화면이 바뀌었다 — " +
+                              $"그때 줄 높이가 다른 스크롤 목록({byList[index]})이 떠 있었다. 언어별 목록 길이 차이로 보고 다름으로 치지 않았다. 그 구간을 확인한다 " +
+                              $"(바뀐 정도 {m.MotionB[index]:F1} 대 {m.MotionA[index]:F1})");
+                }
+                int shifted = ShiftedOnly(m.MotionA, m.MotionB);
+                if (shifted > 0)
+                    lines.Add($"참고 — 영상 비교: {pair} 화면이 바뀐 시점이 {MotionSlack}프레임 안으로 어긋난 곳이 {shifted}곳 있다(다름으로 치지 않았다)");
                 if (differ >= 0)
                 {
                     flagged = true;
@@ -119,7 +153,13 @@ namespace CookApps.LocaleCapture.Editor
                 if (hard >= 0)
                 {
                     flagged = true;
-                    lines.Add($"다름 — 영상 비교: {pair} {hard / (double) fps:F1}초(영상 프레임 {hard})부터 다른 화면이다 (닮은 정도 {hardValue:F1}dB)");
+                    // 두 패스 모두 플레이 검사에서 녹화와 같았으면 화면이 덜 닮은 것은 글자 차이다(글자가 화면을 가득 채운 장면) —
+                    // 다름으로 치지 않고 확인할 곳으로 알린다. 플레이 검사에서 달라진 패스가 끼어 있으면 예전처럼 다름이다.
+                    if (PlaySame(directory, videos[0].locale) && PlaySame(directory, videos[i].locale))
+                        lines.Add($"주의 — 영상 비교: {pair} {hard / (double) fps:F1}초(영상 프레임 {hard})부터 화면이 덜 닮았다(닮은 정도 {hardValue:F1}dB) — " +
+                                  "두 언어 모두 플레이 검사는 녹화와 같았다. 글자가 화면을 많이 채운 장면이면 언어 차이다. 그 구간을 확인한다");
+                    else
+                        lines.Add($"다름 — 영상 비교: {pair} {hard / (double) fps:F1}초(영상 프레임 {hard})부터 다른 화면이다 (닮은 정도 {hardValue:F1}dB)");
                     continue;
                 }
                 if (suspect >= 0)
@@ -155,6 +195,65 @@ namespace CookApps.LocaleCapture.Editor
                 }
                 catch { return null; }
             }
+        }
+
+        // 한 언어 패스가 남긴 스크롤 목록 크기 기록(verify/<언어>.json 의 Lists). 없으면 null(이전 버전으로 뽑은 영상).
+        private sealed class PassLists
+        {
+            public int Start;   // 영상 첫 프레임의 세션 프레임
+            public List<HitTrace.ListState> States;
+
+            public static PassLists Load(string directory, string locale)
+            {
+                try
+                {
+                    string file = Path.Combine(directory, "verify", locale + ".json");
+                    if (!File.Exists(file)) return null;
+                    CaptureVerify.Report report = UnityEngine.JsonUtility.FromJson<CaptureVerify.Report>(File.ReadAllText(file));
+                    if (report == null || report.Lists == null || report.Lists.Count == 0) return null;
+                    return new PassLists { Start = report.VideoStartFrame, States = report.Lists };
+                }
+                catch { return null; }
+            }
+
+            // 그 영상 프레임에 두 패스 모두에 떠 있고 내용·보이는 영역 크기가 서로 다른 목록의 이름(없으면 null).
+            public static string Differing(PassLists a, PassLists b, int videoFrame)
+            {
+                if (a == null || b == null) return null;
+                return ListsDiffering(a.States, b.States, a.Start + videoFrame, b.Start + videoFrame);
+            }
+        }
+
+        internal static string ListsDiffering(List<HitTrace.ListState> a, List<HitTrace.ListState> b, int frameA, int frameB)
+        {
+            Dictionary<string, HitTrace.ListState> x = ListsAt(a, frameA), y = ListsAt(b, frameB);
+            foreach (KeyValuePair<string, HitTrace.ListState> pair in x)
+                if (y.TryGetValue(pair.Key, out HitTrace.ListState other) && (other.View != pair.Value.View || other.Content != pair.Value.Content)) return pair.Key;
+            return null;
+        }
+
+        // 그 프레임에 떠 있는 목록들의 마지막 크기(기록은 프레임 순이다).
+        private static Dictionary<string, HitTrace.ListState> ListsAt(List<HitTrace.ListState> states, int frame)
+        {
+            var now = new Dictionary<string, HitTrace.ListState>();
+            foreach (HitTrace.ListState state in states)
+            {
+                if (state.Frame > frame) break;
+                if (state.Children < 0) now.Remove(state.Name);
+                else now[state.Name] = state;
+            }
+            return now;
+        }
+
+        // 그 언어 패스가 플레이 검사에서 녹화와 같았나(검사 결과가 없으면 아니라고 본다).
+        private static bool PlaySame(string directory, string locale)
+        {
+            try
+            {
+                CaptureVerify.Report report = CaptureVerify.Load(directory, locale);
+                return report != null && report.DivergedFrame < 0;
+            }
+            catch { return false; }
         }
 
         // 그 프레임에 한쪽(more — 영상이 더 많이 바뀐 쪽)에서만 배치가 움직였나. 배치는 보통 그 화면을 그리는 프레임에 계산하지만
@@ -217,17 +316,19 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         // 프레임마다 두 영상의 바뀐 정도 차이(큰 쪽의 일정 비율은 글자 차이로 빼고)를 보고, 주의·다름 기준을 처음 넘는 프레임과 가장 큰 값을 돌려준다.
-        // layoutOnly: 그 프레임이 한쪽 언어에서만 UI 배치가 움직인 프레임인가(없으면 가리지 않는다). 그런 프레임은 판정에서 빼고,
-        // 그중 다름 기준을 넘었던 것을 excused 로 돌려준다.
+        // 같은 변화가 MotionSlack 프레임 안에서 앞뒤로 어긋난 것은 다르다고 보지 않는다(Score).
+        // layoutOnly: 그 프레임이 언어별 화면 차이로 설명되는 프레임인가(한쪽 언어에서만 UI 배치가 움직였다, 줄 높이가 다른 스크롤 목록이 떠 있다).
+        // 없으면 가리지 않는다. 그런 프레임은 판정에서 빼고, 그중 다름 기준을 넘었던 것을 excused 로 돌려준다.
         internal static (int suspect, int differ, double top, List<int> excused) MotionMismatch(List<double> a, List<double> b, Func<int, bool> layoutOnly = null)
         {
             int suspect = -1, differ = -1;
             double top = 0;
             var excused = new List<int>();
             int n = Math.Min(a.Count, b.Count);
+            double[] sumA = Sums(a, n), sumB = Sums(b, n);
             for (int i = 0; i < n; i++)
             {
-                double score = Math.Abs(a[i] - b[i]) - MotionRelative * Math.Max(a[i], b[i]);
+                double score = Score(a, b, sumA, sumB, i, n, MotionSlack);
                 if (score >= MotionSuspect && layoutOnly != null && layoutOnly(i))
                 {
                     if (score >= MotionDiffer) excused.Add(i);
@@ -238,6 +339,49 @@ namespace CookApps.LocaleCapture.Editor
                 if (differ < 0 && score >= MotionDiffer) differ = i;
             }
             return (suspect, differ, top, excused);
+        }
+
+        // 앞에서부터 더한 값(구간 합을 바로 내려고): sums[i] = values[0..i) 의 합.
+        private static double[] Sums(List<double> values, int n)
+        {
+            var sums = new double[n + 1];
+            for (int i = 0; i < n; i++) sums[i + 1] = sums[i] + values[i];
+            return sums;
+        }
+
+        // 프레임 i 에서 두 영상의 바뀐 정도가 얼마나 다른가. 꼭 같은 프레임끼리 견준 값(Gap)에서, 앞뒤 slack 프레임 안의 어긋남 두 가지를 넘겨 준다.
+        //  1. 같은 변화가 한두 프레임 밀렸다: 이 프레임 값과 가장 가까운 값을 다른 쪽의 앞뒤 프레임에서 찾는다(양쪽을 번갈아 보고 큰 쪽).
+        //  2. 화면이 한두 프레임 늦게 그려졌다가 따라잡았다(여러 프레임의 변화가 한 프레임에 몰림): 이 프레임을 낀 같은 구간의 바뀐 양 합이
+        //     양쪽에서 같으면 된다. 같은 구간끼리 견주므로 두 영상에 똑같이 있는 배경 움직임은 서로 지워진다.
+        // 둘 중 작은 쪽을 쓴다. 한쪽에만 있는 변화나 한쪽만 계속 움직이는 것은 어느 쪽으로도 맞지 않아 그대로 크게 나온다.
+        // slack 이 0 이면 꼭 같은 프레임끼리 견준 값이다.
+        private static double Score(List<double> a, List<double> b, double[] sumA, double[] sumB, int i, int n, int slack)
+        {
+            int from = Math.Max(0, i - slack), to = Math.Min(n - 1, i + slack);
+            double ab = double.MaxValue, ba = double.MaxValue;
+            for (int j = from; j <= to; j++)
+            {
+                ab = Math.Min(ab, Gap(a[i], b[j]));
+                ba = Math.Min(ba, Gap(b[i], a[j]));
+            }
+            double merged = double.MaxValue;
+            for (int start = from; start <= i; start++)
+                for (int end = i; end <= to; end++)
+                    merged = Math.Min(merged, Math.Abs((sumA[end + 1] - sumA[start]) - (sumB[end + 1] - sumB[start])));
+            merged -= MotionRelative * Math.Max(a[i], b[i]);
+            return Math.Min(Math.Max(ab, ba), merged);
+        }
+
+        private static double Gap(double u, double v) => Math.Abs(u - v) - MotionRelative * Math.Max(u, v);
+
+        // 꼭 같은 프레임끼리 견주면 다름 기준을 넘지만 MotionSlack 프레임 안에서는 맞는 프레임 수(유예로 넘긴 곳).
+        internal static int ShiftedOnly(List<double> a, List<double> b)
+        {
+            int count = 0, n = Math.Min(a.Count, b.Count);
+            double[] sumA = Sums(a, n), sumB = Sums(b, n);
+            for (int i = 0; i < n; i++)
+                if (Gap(a[i], b[i]) >= MotionDiffer && Score(a, b, sumA, sumB, i, n, MotionSlack) < MotionDiffer) count++;
+            return count;
         }
 
         // Window 프레임 평균이 threshold 아래로 내려간 첫 구간의 시작 프레임과 그 평균. 없으면 (-1, 0).

@@ -39,6 +39,8 @@ namespace CookApps.LocaleCapture.Editor
             public List<string> PassHashes = new List<string>();   // "패스=난수 상태 요약"
             public int SavedInsecureHttp = -1;
             public int SavedAudioMute = -1;   // 게임뷰 Mute Audio(마스터 음소거) — 재생 녹화 동안 풀었다가 되돌린다
+            public bool RenderScaleSaved;
+            public float SavedRenderScale;   // URP 렌더 스케일 원래 값 — 재생이 START 전 구간에서 낮춘다. 패스 도중 도메인이 다시 올라와도 되돌리게 여기 둔다
             public bool StartSceneOverridden;
             public string SavedStartScene;
             public bool RetryingRealtime;   // 지금 패스는 빠르게 뽑은 게 녹화와 달라 실제 속도로 다시 뽑는 중
@@ -345,6 +347,7 @@ namespace CookApps.LocaleCapture.Editor
                 if (manifest.Width > 0 && !GameViewResolution.Matches(manifest.Width, manifest.Height)) GameViewResolution.Set(manifest.Width, manifest.Height);
                 AllowLocalHttp();
                 UnmuteAudio();
+                if (!_state.RenderScaleSaved) { _state.SavedRenderScale = CaptureRender.CurrentScale(); _state.RenderScaleSaved = _state.SavedRenderScale > 0f; }   // 세션이 START 전에 낮춘다 — 원래 값을 적어 둔다
                 Enter(request);
             }
             catch (Exception e) { Finish("패스 시작 실패: " + e.Message, false); }
@@ -397,6 +400,7 @@ namespace CookApps.LocaleCapture.Editor
         {
             if (_state.SavedInsecureHttp >= 0) { PlayerSettings.insecureHttpOption = (InsecureHttpOption) _state.SavedInsecureHttp; _state.SavedInsecureHttp = -1; }
             if (_state.SavedAudioMute >= 0) { EditorUtility.audioMasterMute = _state.SavedAudioMute == 1; _state.SavedAudioMute = -1; }
+            if (_state.RenderScaleSaved) { CaptureRender.Restore(_state.SavedRenderScale); _state.RenderScaleSaved = false; }
             RestoreEnterPlayMode();
             if (_state.StartSceneOverridden)
             {
@@ -559,22 +563,30 @@ namespace CookApps.LocaleCapture.Editor
                     // 실제 서버에서 받은 응답이 있었으면(주소에 언어가 든 요청, 녹화 땐 캐시를 써서 안 나갔던 요청) 그 패스를 한 번 더 뽑는다.
                     // 받는 동안 게임 시간을 멈추고 기다리는데, 그 사이에도 게임의 프레임 단위 로직은 돌아 흐름이 녹화보다 앞선다.
                     // 받은 응답은 언어별 테이프에 남으므로 다시 뽑을 땐 기다림 없이 녹화 프레임에 그대로 넘긴다.
+                    // 다만 받은 응답이 녹화 프레임 전에 도착해 기다린 프레임이 없고 검사도 통과했으면, 그 패스는 받아 둔 응답으로 뽑은 것과
+                    // 같다(같은 응답이 같은 프레임에 같은 길로 넘어갔다) — 다시 뽑지 않는다. 응답은 그대로 언어별 테이프에 남는다.
                     if (_state.LastCompleted && !_state.RetriedLive && report != null && report.ServerFetched > 0)
                     {
-                        _state.Reports.Add($"다시 — {report.Pass}: 실제 서버에서 받은 응답 {report.ServerFetched}개가 있어(이 언어로 처음) 받아 둔 응답으로 다시 뽑았다");
-                        _state.RetriedLive = true;
-                        StartPass();
-                        break;
+                        if (report.ServerHeldFrames > 0 || Divergence(report) != null)
+                        {
+                            _state.Reports.Add($"다시 — {report.Pass}: 실제 서버에서 받은 응답 {report.ServerFetched}개가 있어(이 언어로 처음) 받아 둔 응답으로 다시 뽑았다" +
+                                               (report.ServerHeldFrames > 0 ? $" (응답을 {report.ServerHeldFrames}프레임 기다림)" : ""));
+                            _state.RetriedLive = true;
+                            StartPass();
+                            break;
+                        }
+                        _state.Reports.Add($"참고 — {report.Pass}: 실제 서버에서 받은 응답 {report.ServerFetched}개(이 언어로 처음)가 녹화 프레임 전에 도착해 기다림 없이 그대로 썼다");
                     }
                     _state.RetriedLive = false;
                     // 재생이 녹화와 달라졌으면 그 패스만 실제 속도로 다시 뽑는다(파일은 덮어쓴다). 간헐적인 어긋남은 다시 뽑으면 대개 맞는다 —
-                    // 한도(MaxRetries)까지 뽑되, 실제 속도 재생이 두 번 연달아 같은 곳에서 어긋나면 그 기록에서는 늘 그런 것으로 보고 그만둔다.
+                    // 한도(MaxRetries)까지 뽑되, 두 번 연달아 같은 곳에서 어긋나면 그 언어에서는 늘 그런 것으로 보고 그만둔다.
+                    // 빠르게 뽑은 것과 실제 속도로 뽑은 것이 같은 곳에서 어긋난 것도 "연달아 두 번" 이다 — 속도 탓이 아니므로 한 번 더 뽑아도 같다.
                     string diverged = _state.LastCompleted ? Divergence(report) : null;
                     if (diverged != null)
                     {
                         bool wasRealtime = _state.Settings.RealtimeReplay || _state.RetryingRealtime;
-                        bool repeated = wasRealtime && diverged == _state.LastDivergence;
-                        if (wasRealtime) _state.LastDivergence = diverged;
+                        bool repeated = diverged == _state.LastDivergence;
+                        _state.LastDivergence = diverged;
                         // 이전 형식 기록의 "누른 곳이 다름" 은 언어별 문구에 걸린 것일 수 있어 실패로 치지 않는다 — 실제 속도로 한 번만 다시 뽑아 본다.
                         bool soft = report.DivergedFrame < 0 && report.TraceVersion == 0 && report.TapMismatches.Count > 0;
                         bool again = soft ? !wasRealtime : !repeated && _state.Retries < MaxRetries;
@@ -598,7 +610,7 @@ namespace CookApps.LocaleCapture.Editor
                             break;
                         }
                         if (repeated && !soft)
-                            _state.Reports.Add($"참고 — {report.Pass}: 실제 속도로 두 번 연달아 같은 곳({diverged})에서 어긋나 더 다시 뽑지 않았다 — 이 기록에 재현되지 않는 구간이 있다(다시 플레이해도 같은 장면이면 같을 수 있다)");
+                            _state.Reports.Add($"참고 — {report.Pass}: 두 번 연달아 같은 곳({diverged})에서 어긋나 더 다시 뽑지 않았다 — 재생 속도와 무관하게 이 언어에서는 그 자리가 늘 녹화와 다르다");
                     }
                     // 패스는 끝까지 돌았어도 영상 파일이 안 나왔을 수 있다(인코더가 죽음·디스크 가득·이전 파일이 다른 프로그램에 열려 있음).
                     // 인코더가 죽은 경우는 다음 시도에서 다른 인코더로 넘어가므로 다시 뽑아 본다.
@@ -717,7 +729,7 @@ namespace CookApps.LocaleCapture.Editor
                     _state.Reports.Add("다름 — 소리: 영상에 BGM·SFX 를 다시 섞지 못했다(" + Shorten(e.Message, 120) + ") — 영상 파일이 다른 프로그램에 열려 있는지 확인하고 창의 '다시 뽑기' 를 누른다");
                 }
             }
-            if (success && _state.PassHashes.Count > 0) _state.Reports.Add(CompareHashes(_state.PassHashes));
+            if (success && _state.PassHashes.Count > 0) _state.Reports.Add(CompareHashes(_state.PassHashes, _state.Reports.Any(r => r.StartsWith("다름"))));
             if (success)
             {
                 // 일부만 다시 뽑았어도 영상 비교는 이 기록의 모든 언어를 본다(앞서 뽑아 둔 영상 포함).
@@ -727,7 +739,7 @@ namespace CookApps.LocaleCapture.Editor
         }
 
         // 한 패스의 검사 결과를 결과 줄로. "다름" 은 실패, "주의"·"참고" 는 성공으로 치고 따로 보여 준다.
-        // 녹화 시작(START) 이후에 녹화와 프레임 하나라도 다르게 흘렀으면 실패다 — 덱 셔플·뽑기처럼 한 프레임 차이가 다른 플레이로 번진다.
+        // 녹화 시작(START) 이후에 녹화와 다른 플레이가 됐으면 실패다 — 무엇이 일어났나는 정확히, 언제 보였나는 2프레임 유예로 본다(CaptureVerify).
         private static void Judge(CaptureVerify.Report report)
         {
             if (report == null) return;
@@ -739,6 +751,29 @@ namespace CookApps.LocaleCapture.Editor
                 _state.Reports.Add($"주의 — {report.Pass}: 녹화와 다른 곳이 눌림 {report.TapMismatches.Count}건, 처음 {Shorten(report.TapMismatches[0], 260)}");
             if (report.EarlyFrame >= 0)
                 _state.Reports.Add($"참고 — {report.Pass}: 녹화 시작 전 프레임 {report.EarlyFrame} 에서 이미 녹화와 달랐다 — [{report.EarlyKind}] {Shorten(report.EarlyDetail, 200)}");
+            // 읽지 못한 영상 프레임 — 플레이 검사와 무관하게 그 언어 영상에만 같은 화면이 한 번 더 들어간다.
+            if (report.RepeatedFrames > 0)
+                _state.Reports.Add($"주의 — {report.Pass}: 영상 프레임 {report.RepeatedFrames}장을 읽지 못해 직전 프레임으로 채웠다 — " +
+                                   $"영상 {Mathf.Max(0, report.RepeatedFirstFrame - report.VideoStartFrame) / (float) fps:F1}초(프레임 {report.RepeatedFirstFrame})에서 화면이 한 프레임 멈춰 보인다");
+            // 도구가 게임 언어를 도중에 바꿨다 — 그 앞 구간은 다른 언어로 찍혔을 수 있다.
+            if (report.LocaleSwitches > 0)
+                _state.Reports.Add($"주의 — {report.Pass}: 프레임 {report.LocaleSwitchFrame}(영상 {Mathf.Max(0, report.LocaleSwitchFrame - report.VideoStartFrame) / (float) fps:F1}초)에 " +
+                                   $"게임 언어가 {report.LocaleSwitchedFrom} 여서 {report.Locale} 로 바꿨다 — 그 앞 구간은 {report.LocaleSwitchedFrom} 로 찍혔을 수 있다. 영상을 확인한다");
+            // 입력 받는 UI 추적이 도중에 꺼졌다 — 그 뒤의 UI 켜짐·꺼짐은 견주지 못했다(다른 검사는 그대로).
+            if (report.UiCheckStopped)
+                _state.Reports.Add($"주의 — {report.Pass}: 입력 받는 UI 추적이 프레임 {report.UiComparedUntil} 에서 꺼져 그 뒤의 UI 켜짐·꺼짐은 비교하지 못했다(콘솔의 경고를 확인한다)");
+            // 스크롤 목록 안이 녹화와 달랐는데 줄·목록 크기는 같았다 — 다름으로 치지 않지만 확인할 곳이다.
+            if (report.ListWarnings != null && report.ListWarnings.Count > 0)
+                _state.Reports.Add($"주의 — {report.Pass}: {Shorten(report.ListWarnings[0], 260)}");
+            // 녹화와 한두 프레임 차이로 보인 곳(유예) — 조용히 넘기지 않고 개수와 처음 것을 남긴다.
+            if (report.SlackCount > 0 && report.Slacks != null && report.Slacks.Count > 0)
+                _state.Reports.Add($"참고 — {report.Pass}: 녹화와 {CaptureVerify.Slack}프레임 안의 차이로 보인 곳 {report.SlackCount}곳(다름으로 치지 않았다) — 처음 프레임 {Shorten(report.Slacks[0], 220)}");
+            // 줄 높이가 녹화 언어와 달라 비교에서 뺀 스크롤 목록 — 실패가 아니지만 무엇을 안 봤는지는 남긴다.
+            if (report.LayoutSkips != null && report.LayoutSkips.Count > 0)
+                _state.Reports.Add($"참고 — {report.Pass}: {Shorten(report.LayoutSkips[0], 260)}" + (report.LayoutSkips.Count > 1 ? $" (이런 목록 모두 {report.LayoutSkips.Count}곳)" : ""));
+            // 끌기가 된 누름 — 클릭을 받을 대상이 녹화와 달랐지만 클릭이 전달되지 않아 견주지 않았다.
+            if (report.TapNotes != null && report.TapNotes.Count > 0)
+                _state.Reports.Add($"참고 — {report.Pass}: 프레임 {Shorten(report.TapNotes[0], 260)}" + (report.TapNotes.Count > 1 ? $" (이런 누름 모두 {report.TapNotes.Count}곳)" : ""));
             // 로딩이 끝난 프레임 차이는 원인을 짚는 단서다 — 실제로 달라진 곳이 있을 때만 보여 준다(개수로 맞춰 보는 값이라 그것만으로는 뜻이 없다).
             if (report.Shifts.Count > 0 && (report.DivergedFrame >= 0 || report.EarlyFrame >= 0))
                 _state.Reports.Add($"참고 — {report.Pass}: 녹화와 다른 프레임에 끝난 로딩 {string.Join(", ", report.Shifts.Take(4))}" + (report.HeldFrames > 0 ? $", 로딩 대기 {report.HeldFrames}프레임" : ""));
@@ -806,12 +841,14 @@ namespace CookApps.LocaleCapture.Editor
         private static string ReportName(string pass) => pass.StartsWith("video:") ? LocaleOf(pass) : pass;
 
         // 패스(언어별 영상·BGM·SFX)끼리 같은 플레이였는지. 다르면 같은 플레이끼리 묶어 보여 준다.
-        private static string CompareHashes(List<string> passHashes)
+        // 패스끼리 게임 난수 흐름을 견준다. differed: 앞의 검사에서 이미 다름이 나온 패스가 있다 — 그때는 난수 흐름이 같아도
+        // "같은 플레이" 라고 적지 않는다(난수를 안 쓰는 화면에서 갈린 것은 이 값에 안 잡힌다).
+        private static string CompareHashes(List<string> passHashes, bool differed)
         {
             var groups = passHashes.Select(p => p.Split('=')).GroupBy(p => p[1], p => p[0]).ToList();
-            return groups.Count == 1
-                ? (passHashes.Count == 1 ? "일치 — 한 패스" : "일치 — 모든 언어 영상과 BGM·SFX 가 같은 플레이")
-                : "다름 — 같은 플레이끼리: " + string.Join(" / ", groups.Select(g => "[" + string.Join(", ", g) + "]"));
+            if (groups.Count > 1) return "다름 — 같은 플레이끼리: " + string.Join(" / ", groups.Select(g => "[" + string.Join(", ", g) + "]"));
+            if (differed) return "참고 — 게임 난수 흐름은 모든 패스가 같다(위의 다름은 다른 검사에서 나왔다)";
+            return passHashes.Count == 1 ? "일치 — 한 패스" : "일치 — 모든 언어 영상과 BGM·SFX 가 같은 플레이";
         }
 
         // ── 저장 ───────────────────────────────────────────────────────────────
