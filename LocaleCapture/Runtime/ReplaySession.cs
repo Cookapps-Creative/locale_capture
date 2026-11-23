@@ -203,6 +203,7 @@ namespace CookApps.LocaleCapture
                 CaptureScreen.Begin(_manifest, true);
                 RandomTrace.Begin(_manifest.RandomCalls);
                 NetworkTape.BeginRecord(dir, Request.LiveMarkers);
+                RealtimeTape.BeginRecord(dir);
                 CaptureInput.BeginRecord(Path.Combine(dir, CaptureInput.FileName));
                 _relay = new InputRelay();   // 실제 입력을 재생과 같은 시점에 넣는다(트레이스보다 먼저)
                 // 버퍼는 필요한 만큼 늘린다 — 기본값(1MB 고정)은 가득 차면 가장 오래된 입력부터 덮어써서, 마우스를 많이 움직이는
@@ -228,6 +229,7 @@ namespace CookApps.LocaleCapture
                 NetworkTape.BeginReplay(dir, Request.Locale, Request.LiveMarkers, fps,
                     string.IsNullOrEmpty(Request.RecordedLocale) ? _manifest.RecordedLocale : Request.RecordedLocale, Request.RecordedLocaleForms,
                     _manifest.TraceVersion >= 2);
+                RealtimeTape.BeginReplay(dir, _manifest.TraceVersion >= 8);
                 CaptureScreen.Begin(_manifest, false);
                 CaptureInput.BeginReplay(Path.Combine(dir, CaptureInput.FileName));
                 CaptureVerify.Begin(_passName, Request.Locale, _manifest, _replayTaps, _replayUi, _replayHits, _replayLists);
@@ -327,6 +329,7 @@ namespace CookApps.LocaleCapture
             CaptureClock.SetFrame(Frame);
             CaptureInput.SetFrame(Frame);
             NetworkTape.Tick(Frame);
+            RealtimeTape.Tick(Frame);
             RandomTrace.SetFrame(Frame);
         }
 
@@ -796,11 +799,13 @@ namespace CookApps.LocaleCapture
                     }
                     _relay?.Dispose(); _relay = null;
                     NetworkTape.End(_manifest?.RecordedLocale, completed);
+                    RealtimeTape.End(completed, Frame);
                 }
                 else
                 {
                     EndReplay();
                     NetworkTape.End(null, completed);
+                    RealtimeTape.End(completed, Frame);
                     LastReport = CaptureVerify.End(Request.Directory, Frame);
                     double total = _replayClock.Elapsed.TotalSeconds;
                     Debug.Log($"[LocaleCapture] {_passName} 재생 {Frame}프레임({Frame / (double) Mathf.Max(1, _manifest?.Fps ?? 30):F1}초 분량)에 {total:F1}초 — " +
@@ -812,6 +817,7 @@ namespace CookApps.LocaleCapture
             catch (Exception e) { Debug.LogException(e); error ??= e.Message; completed = false; }
             AddressablesProbe.Unregister();
             CaptureMarkers.Clear();
+            RealtimeTape.End(false, 0);   // 위에서 예외로 빠졌어도 통신을 붙잡은 채 남지 않게(이미 끝났으면 아무 일도 없다)
             ThreadGate.End();
             CaptureClock.End();
             RestoreUiCulture();

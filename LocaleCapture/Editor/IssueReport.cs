@@ -83,6 +83,12 @@ namespace CookApps.LocaleCapture.Editor
                     sb.AppendLine($"- 달라진 곳(프레임 순, 로딩 시점 차이 포함) — 로딩 제외 모두 {r.DifferenceCount}건:");
                     foreach (string d in r.Differences.Take(MaxDifferences)) sb.AppendLine($"  - {Shorten(d, 240)}");
                 }
+                if (r.RealtimeRecorded > 0)
+                    sb.AppendLine($"- 실시간 통신: 기록 {r.RealtimeRecorded}건에서 콜백 {r.RealtimeDelivered}건을 넘기고 호출 {r.RealtimeCalls}건을 맞췄다(실제 서버에는 접속하지 않았다)");
+                if (r.RealtimeLive > 0)
+                    sb.AppendLine($"- 실시간 통신 기록이 없는 녹화라 재생이 실제 서버에 {r.RealtimeLive}번 접속했다");
+                if (r.RealtimeNotes != null)
+                    foreach (string note in r.RealtimeNotes.Take(MaxMismatches)) sb.AppendLine($"- 확인할 곳(실시간 통신): {Shorten(note, 300)}");
                 if (r.RepeatedFrames > 0) sb.AppendLine($"- 읽지 못해 직전 프레임으로 채운 영상 프레임 {r.RepeatedFrames}장(처음 프레임 {r.RepeatedFirstFrame})");
                 if (r.UiCheckStopped) sb.AppendLine($"- 입력 받는 UI 추적이 프레임 {r.UiComparedUntil} 에서 꺼져 그 뒤의 UI 켜짐·꺼짐은 비교하지 못했다");
                 if (r.LocaleSwitches > 0) sb.AppendLine($"- 프레임 {r.LocaleSwitchFrame} 에 게임 언어가 {r.LocaleSwitchedFrom} 여서 {r.Locale} 로 바꿨다({r.LocaleSwitches}번)");

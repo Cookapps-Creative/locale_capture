@@ -57,6 +57,12 @@ namespace CookApps.LocaleCapture
             public int ServerReplayed, ServerLive, ServerMissed;
             public int ServerFetched;                // 실제 서버에서 받아 온 응답 수 — 있으면 그 패스를 받아 둔 응답으로 다시 뽑는다
             public int ServerPiped;                  // 재생한 응답 중 통신 코드를 그대로 돌려 답한 수(전송 단계의 원본 응답으로). 0 이면 통신 코드가 건너뛰어졌다
+            // 실시간 통신(RealtimeTape): 기록한 항목 수 / 재생에서 넘긴 콜백 수 / 기록과 맞춘 호출 수.
+            public int RealtimeRecorded, RealtimeDelivered, RealtimeCalls;
+            // 실시간 통신 기록이 없는 녹화(이전 형식)를 재생하며 게임이 실제 서버에 접속한 횟수 — 그 구간은 녹화와 같게 재생되지 않는다.
+            public int RealtimeLive;
+            // 실시간 통신에서 확인할 곳(보낸 내용이 녹화와 다름, 적지 못한 것). 실패로 치지 않고 주의로 알린다.
+            public List<string> RealtimeNotes = new List<string>();
             public int InputQueued, InputDelivered;   // 재생한 입력 수 / 게임 입력 시스템이 처리한 수
             public string InputDevices;
             public List<string> TapMismatches = new List<string>();   // 녹화와 다른 대상을 누른 곳
@@ -294,6 +300,35 @@ namespace CookApps.LocaleCapture
             Differ(frame, "서버", detail);
         }
 
+        public const string RealtimeKind = "실시간";
+
+        // 실시간 통신(RealtimeTape): 게임이 호출을 한 프레임. 서버 요청처럼 나간 프레임만 조금 다른 것은 넘긴다 — 콜백은 녹화 프레임에 넘긴다.
+        internal static void RealtimeRequested(string call, int recordedFrame, int frame)
+        {
+            if (_report == null || frame == recordedFrame) return;
+            string detail = $"{call} 호출: 녹화 {recordedFrame}, 재생 {frame} ({frame - recordedFrame:+0;-0}프레임)";
+            if (Math.Abs(frame - recordedFrame) <= Slack) { Tolerated(Math.Min(recordedFrame, frame), RealtimeKind, detail); return; }
+            Differ(Math.Min(recordedFrame, frame), RealtimeKind, detail);
+        }
+
+        // 실시간 통신: 녹화에 없던 호출, 녹화와 다른 순서, 재생되지 않고 남은 기록.
+        internal static void RealtimeDiffered(int frame, string detail)
+        {
+            Add(frame, RealtimeKind, detail);
+            Differ(frame, RealtimeKind, detail);
+        }
+
+        // 실시간 통신: 이 패스의 요약. live 는 기록이 없는 녹화(이전 형식)를 재생하며 실제 서버에 접속한 횟수.
+        internal static void RealtimeSummary(int recorded, int delivered, int calls, int live, List<string> notes)
+        {
+            if (_report == null) return;
+            _report.RealtimeRecorded = recorded;
+            _report.RealtimeDelivered = delivered;
+            _report.RealtimeCalls = calls;
+            _report.RealtimeLive = live;
+            if (notes != null) _report.RealtimeNotes.AddRange(notes);
+        }
+
         internal static Report End(string directory, int frames)
         {
             Report report = _report;
@@ -321,8 +356,9 @@ namespace CookApps.LocaleCapture
                 CompareHits(report, _manifest, _replayedHits, _replayedLists);
                 // 난수 생성: new Random() 이 만들어진 프레임
                 // 난수 생성: new Random() 이 만들어진 프레임 — 난수 흐름이라 유예를 두지 않는다
-                CompareTimeline("난수 생성", Timeline(_manifest.RandomCreations, c => ("new Random() — " + c.Creator, c.Frame, 1)),
-                    Timeline(CaptureClock.Creations, c => ("new Random() — " + c.Creator, c.Frame, 1)), 0);
+                // 통신 라이브러리 안쪽에서 만든 것은 뺀다 — 재생에서는 그 안쪽(소켓·정적 초기화)이 돌지 않는다(RealtimeTape).
+                CompareTimeline("난수 생성", Timeline(_manifest.RandomCreations.FindAll(c => !RealtimeTape.IsLibraryCode(c.Creator)), c => ("new Random() — " + c.Creator, c.Frame, 1)),
+                    Timeline(CaptureClock.Creations.FindAll(c => !RealtimeTape.IsLibraryCode(c.Creator)), c => ("new Random() — " + c.Creator, c.Frame, 1)), 0);
             }
 
             // 난수: 프레임 끝의 상태가 녹화와 같아야 한다. 다만 연달아 Slack 프레임 안으로 어긋났다가 다시 맞았고, 난수를 쓴 코드의 순서가

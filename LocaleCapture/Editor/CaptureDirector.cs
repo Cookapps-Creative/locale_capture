@@ -771,6 +771,29 @@ namespace CookApps.LocaleCapture.Editor
             // 줄 높이가 녹화 언어와 달라 비교에서 뺀 스크롤 목록 — 실패가 아니지만 무엇을 안 봤는지는 남긴다.
             if (report.LayoutSkips != null && report.LayoutSkips.Count > 0)
                 _state.Reports.Add($"참고 — {report.Pass}: {Shorten(report.LayoutSkips[0], 260)}" + (report.LayoutSkips.Count > 1 ? $" (이런 목록 모두 {report.LayoutSkips.Count}곳)" : ""));
+            // 실시간 통신 기록이 없는 녹화(이전 형식)인데 게임이 매칭 서버에 붙었다 — 그 구간은 재생마다 실제 통신이라 녹화와 같지 않다.
+            if (report.RealtimeLive > 0)
+                _state.Reports.Add($"주의 — {report.Pass}: 이 녹화에는 실시간 통신(매칭 서버) 기록이 없어 재생이 실제 서버에 {report.RealtimeLive}번 접속했다 — " +
+                                   "그 구간은 녹화와 같게 재생되지 않는다. 지금 버전으로 새로 녹화하면 통신까지 기록된다");
+            // 실시간 통신에서 보낸 내용이 녹화와 달랐다 등 — 다름으로 치지 않지만 확인할 곳이다.
+            // 같은 곳이 패스마다 똑같이 나오면(게임이 실제 시각을 넣어 보내는 요청 등) 한 번만 적는다.
+            if (report.RealtimeNotes != null && report.RealtimeNotes.Count > 0)
+            {
+                // 게임이 보낸 내용만 녹화와 달랐던 호출: 순서·프레임은 맞았고, 재생에서는 실제로 보내지 않으므로 돌아오는 응답·이벤트는 녹화 그대로다.
+                // 진행이나 화면이 달라졌으면 다른 검사가 잡는다 — 무엇이 달랐는지 남기되 참고로 둔다. 그 밖의 것(적지 못한 내용 등)은 주의다.
+                List<string> sent = report.RealtimeNotes.Where(n => n.Contains(RealtimeTape.SentDiffers)).ToList();
+                List<string> other = report.RealtimeNotes.Where(n => !n.Contains(RealtimeTape.SentDiffers)).ToList();
+                if (other.Count > 0)
+                {
+                    string note = $"실시간 통신 — {Shorten(other[0], 240)}" + (other.Count > 1 ? $" (이런 곳 모두 {other.Count}곳)" : "");
+                    if (!_state.Reports.Any(line => line.EndsWith(note, StringComparison.Ordinal))) _state.Reports.Add($"주의 — {report.Pass}: {note}");
+                }
+                if (sent.Count > 0)
+                {
+                    string note = $"실시간 통신에서 게임이 보낸 내용이 녹화와 달랐던 호출 {sent.Count}곳(처음: {Shorten(sent[0], 120)}) — 재생에서는 실제로 보내지 않아, 받은 응답·이벤트는 녹화 그대로다";
+                    if (!_state.Reports.Any(line => line.EndsWith(note, StringComparison.Ordinal))) _state.Reports.Add($"참고 — {report.Pass}: {note}");
+                }
+            }
             // 끌기가 된 누름 — 클릭을 받을 대상이 녹화와 달랐지만 클릭이 전달되지 않아 견주지 않았다.
             if (report.TapNotes != null && report.TapNotes.Count > 0)
                 _state.Reports.Add($"참고 — {report.Pass}: 프레임 {Shorten(report.TapNotes[0], 260)}" + (report.TapNotes.Count > 1 ? $" (이런 누름 모두 {report.TapNotes.Count}곳)" : ""));

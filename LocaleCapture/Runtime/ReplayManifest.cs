@@ -25,7 +25,9 @@ namespace CookApps.LocaleCapture
         //  6 부터: 기록 시작 때 실제 장치마다 가상 장치를 미리 만들고 그 목록을 남긴다(Devices). 재생도 같은 장치를 같은 순서로 만든다.
         //  7 부터: 스크롤 목록 안의 입력 받는 UI 를 목록별로 따로 세고 줄 크기를 남긴다(HitTrace.Event 의 Scroll·Shape·Size).
         //          목록의 내용·보이는 영역 크기가 바뀐 프레임도 남긴다(ListEvents).
-        public const int CurrentTraceVersion = 7;
+        //  8 부터: 실시간 통신(Photon)을 기록한다(realtime.tape.json — 쓰지 않은 녹화면 빈 목록). 재생은 실제 서버에 접속하지 않는다.
+        //          이전 판의 녹화는 그 기록이 없어 실제 통신을 그대로 두고, 접속했으면 결과에 알린다.
+        public const int CurrentTraceVersion = 8;
         public int TraceVersion;
         public int SeedScheme;   // new Random() 시드 방식(CaptureClock). 재생은 기록 때 방식을 따른다
 

@@ -22,6 +22,7 @@ namespace CookApps.LocaleCapture.Editor
     //  · 프로젝트 코드의 Stopwatch(Start·Elapsed 등) → CaptureStopwatch(세션 시계). 프레임당 ms 예산으로 일을 나누는 코드가 재생마다 같은 프레임에 끝나게
     //  · 로딩 코드(Unity.ResourceManager·Unity.Addressables)의 실시간·unscaled 시간 → 로딩 대기 중에도 흐르는 시계(CaptureClock.Load*)
     //  · HttpClient·UnityWebRequest → NetworkTape, AsyncOperation 완료 → CaptureMarkers
+    //  · Photon(있으면): 피어의 호출·받기·상태, 리스너 콜백, 지역 고르기 → RealtimeTape
     //  · Unity 동기화 컨텍스트 Post·UniTask AddContinuation(다른 스레드에서 부른 것만) → ThreadGate
     //  · Addressables AssetDatabaseProvider 생성자 → 에디터 전용 가짜 로딩 지연을 0 으로
     //  · Addressables ResourceManager.ExecuteDeferredCallbacks → 미뤄진 완료 콜백을 같은 프레임에 이어서 불러 연쇄 로딩을 한 프레임에
@@ -62,6 +63,7 @@ namespace CookApps.LocaleCapture.Editor
             finally { Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", dmdType); }
             InstallMs = watch.Elapsed.TotalMilliseconds;
             Debug.Log($"[LocaleCapture] 런타임 패치 {PatchedMethods}곳 ({InstallMs:F0}ms), 앱 포커스 알림 막음 {_focusBlocked}곳" +
+                      (RealtimeTape.Bound ? ", 실시간 통신(Photon) 연결" : "") +
                       (Problems.Count > 0
                           ? $", 못 바꾼 곳 {Problems.Count}건(재현에 영향 줄 수 있는 것 {RiskyProblems.Count + CoreProblems.Count}건): {string.Join(" / ", CoreProblems.Concat(RiskyProblems).Concat(Problems).Take(5))}"
                           : ""));
@@ -83,6 +85,7 @@ namespace CookApps.LocaleCapture.Editor
             Try("HttpClient.SendAsync", () => PatchHttp(typeof(HttpClient).GetMethod("SendAsync", new[] { typeof(HttpRequestMessage), typeof(HttpCompletionOption), typeof(CancellationToken) })));
             Try("UnityWebRequest.SendWebRequest", () => _harmony.Patch(typeof(UnityWebRequest).GetMethod("SendWebRequest", Type.EmptyTypes),
                 prefix: new HarmonyMethod(typeof(CapturePatches), nameof(WebPrefix)), postfix: new HarmonyMethod(typeof(CapturePatches), nameof(WebPostfix))));
+            InstallRealtime();
             Try("AsyncOperation 완료", () => _harmony.Patch(AccessTools.Method(typeof(AsyncOperation), "InvokeCompletionEvent"),
                 prefix: new HarmonyMethod(typeof(CapturePatches), nameof(AsyncPrefix))));
             Try("씬 로드 시작", () => _harmony.Patch(AccessTools.Method(typeof(UnityEngine.SceneManagement.SceneManager), "LoadSceneAsyncNameIndexInternal")
@@ -150,6 +153,8 @@ namespace CookApps.LocaleCapture.Editor
         {
             if (_harmony == null) return;
             NetworkTape.TransportPatcher = null;
+            RealtimeTape.ListenerPatcher = null;   // 실시간 통신 묶음(_realtime)은 해제하지 않는다 — 세션이 아니면 원래 호출로 넘긴다
+            RealtimeTape.RegionPatcher = null;
             try { _harmony.UnpatchAll(Id); } catch (Exception e) { Debug.LogWarning("[LocaleCapture] 패치 해제 실패: " + e.Message); }
             lock (_transports) _transports.Clear();
             _harmony = null;
@@ -518,6 +523,207 @@ namespace CookApps.LocaleCapture.Editor
                 yield return ci;
             }
         }
+
+        // ── 실시간 통신(Photon) ─────────────────────────────────────────────────
+        // RealtimeTape 가 타입을 이름으로 찾아 두면(Photon 이 있는 프로젝트) 피어의 호출·받기·상태와 그 위 층의 지역 고르기·연결 유지 스레드에 건다.
+        // 리스너(콜백을 받는 쪽)는 어느 타입인지 연결이 처음 쓰일 때에야 알 수 있어, 기록에서 그때 건다(PatchListener).
+
+        // 패치 메서드는 제네릭이면 안 된다: Harmony 는 패치 목록을 메서드 토큰으로 적어 두었다가 되살리는데, 타입을 채운 제네릭 메서드는
+        // 토큰이 채우기 전의 것이라 되살리면 타입이 빈 메서드가 된다. 그 상태로 메서드를 다시 만들면(패치 해제 때) Mono JIT 이 단언으로 에디터째 죽는다.
+        //
+        // 이 패치들은 따로 둔 묶음(_realtime)으로 걸고 해제하지 않는다. 세션이 아닐 때는 곧바로 원래 호출로 넘기므로 걸어 둔 채여도 동작이 같다.
+        // Harmony 의 해제는 메서드를 "남은 패치로 다시 만드는" 일이라, 걸 때와 다른 조합의 코드가 새로 만들어진다 — 그 자리에서 에디터가 죽은 적이 있다.
+        private const string RealtimePatch = "실시간 통신(Photon)";
+        private static Harmony _realtime;
+        private static readonly HashSet<MethodBase> _realtimePatched = new HashSet<MethodBase>();   // 이미 건 메서드(다시 걸면 두 번 불린다)
+
+        private static void InstallRealtime()
+        {
+            RealtimeTape.ListenerPatcher = null;
+            RealtimeTape.RegionPatcher = null;
+            if (!RealtimeTape.Bind())
+            {
+                if (RealtimeTape.BindProblem == null) return;   // 이 프로젝트에는 없다
+                Problems.Add($"{RealtimePatch}: {RealtimeTape.BindProblem} — 실시간 통신을 기록·재생하지 못한다");
+                CoreProblems.Add(RealtimePatch);
+                return;
+            }
+            const BindingFlags statics = BindingFlags.Static | BindingFlags.NonPublic;
+            const BindingFlags members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            HarmonyMethod M(string name) => new HarmonyMethod(typeof(CapturePatches).GetMethod(name, statics) ?? throw new MissingMethodException(name));
+            _realtime ??= new Harmony(Id + ".realtime");
+            // 이미 걸려 있으면 다시 걸지 않는다(같은 패치가 두 번 붙으면 호출이 두 번 적힌다).
+            void Once(MethodBase method, Action patch)
+            {
+                lock (_realtimePatched)
+                {
+                    if (_realtimePatched.Contains(method)) return;
+                    patch();   // 걸지 못했으면(예외) 다음 세션에 다시 해 본다
+                    _realtimePatched.Add(method);
+                }
+            }
+            Try(RealtimePatch, () =>
+            {
+                int calls = 0, receives = 0;
+                foreach (MethodInfo method in RealtimeTape.PeerType.GetMethods(members | BindingFlags.DeclaredOnly))
+                {
+                    if (method.IsAbstract || method.ContainsGenericParameters) continue;
+                    switch (method.Name)
+                    {
+                        case "Connect": case "Disconnect": case "SendOperation": case "SendMessage": case "EstablishEncryption":
+                        case "InitDatagramEncryption": case "InitPayloadEncryption": case "FetchServerTimestamp":
+                            if (method.ReturnType != typeof(bool) && method.ReturnType != typeof(void)) break;
+                            calls++;
+                            if (method.ReturnType == typeof(bool))
+                                Once(method, () => _realtime.Patch(method, prefix: M(nameof(RealtimeCallPrefix)), postfix: M(nameof(RealtimeCallPostfix)), finalizer: M(nameof(RealtimeCallFinalizer))));
+                            else
+                                Once(method, () => _realtime.Patch(method, prefix: M(nameof(RealtimeVoidPrefix)), finalizer: M(nameof(RealtimeCallFinalizer))));
+                            break;
+                        case "DispatchIncomingCommands":
+                            if (method.ReturnType != typeof(bool)) break;
+                            receives++;
+                            Once(method, () => _realtime.Patch(method, prefix: M(nameof(RealtimeDispatchPrefix)), finalizer: M(nameof(RealtimeDispatchFinalizer))));
+                            break;
+                        case "SendOutgoingCommands": case "SendAcksOnly":
+                            if (method.ReturnType == typeof(bool)) Once(method, () => _realtime.Patch(method, prefix: M(nameof(RealtimePumpPrefix))));
+                            break;
+                    }
+                }
+                if (calls == 0 || receives == 0) throw new MissingMethodException("PhotonPeer.Connect·DispatchIncomingCommands");
+                PatchedMethods += calls + receives - 1;
+            });
+            if (CoreProblems.Contains(RealtimePatch)) return;
+
+            // 그 위 층: 지역 고르기(실제로 핑을 잰다)와 연결 유지 스레드. 이 층을 안 쓰는 프로젝트면 없다.
+            MethodInfo ping = RealtimeTape.RegionHandlerType?.GetMethod("PingMinimumOfRegions", members);
+            if (ping != null && ping.ReturnType == typeof(bool) && ping.GetParameters().Length >= 1 && typeof(Delegate).IsAssignableFrom(ping.GetParameters()[0].ParameterType))
+                Try(RealtimePatch + " 지역 고르기", () => Once(ping, () =>
+                    _realtime.Patch(ping, prefix: M(nameof(RealtimeRegionPrefix)), postfix: M(nameof(RealtimeCallPostfix)), finalizer: M(nameof(RealtimeRegionFinalizer)))));
+            MethodInfo keepAlive = RealtimeTape.FallbackType?.GetMethod("RealtimeFallback", members);
+            if (keepAlive != null && keepAlive.ReturnType == typeof(void))
+                Try(RealtimePatch + " 연결 유지", () => Once(keepAlive, () => _realtime.Patch(keepAlive, prefix: M(nameof(RealtimeFallbackPrefix)))));
+            RealtimeTape.ListenerPatcher = PatchListener;
+            RealtimeTape.RegionPatcher = PatchRegionCallback;
+        }
+
+        private static bool RealtimeCallPrefix(object __instance, object[] __args, MethodBase __originalMethod, ref bool __result)
+        {
+            if (RealtimeTape.Current == RealtimeTape.Mode.Off) return true;
+            if (!RealtimeTape.BeforeCall(__instance, __originalMethod.Name, __args, out bool result)) return true;
+            __result = result;
+            return false;
+        }
+
+        private static bool RealtimeVoidPrefix(object __instance, object[] __args, MethodBase __originalMethod) =>
+            RealtimeTape.Current == RealtimeTape.Mode.Off || !RealtimeTape.BeforeCall(__instance, __originalMethod.Name, __args, out _);
+
+        private static void RealtimeCallPostfix(bool __result) => RealtimeTape.CallReturned(__result);
+
+        private static void RealtimeCallFinalizer(object __instance) => RealtimeTape.AfterCall(__instance);
+
+        private static bool RealtimeDispatchPrefix(object __instance, ref bool __result)
+        {
+            if (RealtimeTape.Current == RealtimeTape.Mode.Off) return true;
+            if (!RealtimeTape.BeforeDispatch(__instance, out bool result)) return true;
+            __result = result;
+            return false;
+        }
+
+        private static void RealtimeDispatchFinalizer(object __instance) => RealtimeTape.AfterDispatch(__instance);
+
+        private static bool RealtimePumpPrefix(ref bool __result)
+        {
+            if (!RealtimeTape.BeforePump(out bool result)) return true;
+            __result = result;
+            return false;
+        }
+
+        // 지역 고르기 시작: 첫 인자가 끝났을 때 부를 콜백이다.
+        private static bool RealtimeRegionPrefix(object __instance, object[] __args, ref bool __result)
+        {
+            if (RealtimeTape.Current == RealtimeTape.Mode.Off) return true;
+            RealtimeTape.BeforeRegionPing(__instance, __args != null && __args.Length > 0 ? __args[0] as Delegate : null, out bool skip, out bool result);
+            if (!skip) return true;
+            __result = result;
+            return false;
+        }
+
+        private static void RealtimeRegionFinalizer() => RealtimeTape.AfterCall(null);
+
+        private static bool RealtimeFallbackPrefix() => !RealtimeTape.SkipFallback;
+
+        // 이 리스너 타입에서 피어가 실제로 부르게 되는 콜백 메서드에 건다(같은 메서드는 한 번만).
+        private static void PatchListener(Type type)
+        {
+            if (_realtime == null || type == null) return;
+            try
+            {
+                const BindingFlags statics = BindingFlags.Static | BindingFlags.NonPublic;
+                InterfaceMapping map = type.GetInterfaceMap(RealtimeTape.ListenerType);
+                lock (_realtimePatched)
+                {
+                    string dmdType = Environment.GetEnvironmentVariable("MONOMOD_DMD_TYPE");
+                    Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", "dynamicmethod");
+                    try
+                    {
+                        foreach (MethodInfo target in map.TargetMethods)
+                        {
+                            if (RealtimeTape.CallbackKind(target.Name) == null || target.IsAbstract || !_realtimePatched.Add(target)) continue;
+                            _realtime.Patch(target, prefix: new HarmonyMethod(typeof(CapturePatches).GetMethod(nameof(RealtimeListenerPrefix), statics)),
+                                finalizer: new HarmonyMethod(typeof(CapturePatches).GetMethod(nameof(RealtimeListenerFinalizer), statics)));
+                            PatchedMethods++;
+                        }
+                    }
+                    finally { Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", dmdType); }
+                }
+                Debug.Log($"[LocaleCapture] {RealtimePatch}: {type.FullName} 이 받는 응답·이벤트를 기록한다");
+            }
+            catch (Exception e)
+            {
+                string problem = $"{RealtimePatch} {type.FullName}: {e.GetBaseException().Message} — 받은 응답·이벤트를 기록하지 못한다(이 녹화의 실시간 통신은 재생되지 않는다)";
+                lock (Problems) { Problems.Add(problem); CoreProblems.Add(RealtimePatch + " 받기"); }
+                Debug.LogWarning("[LocaleCapture] " + problem);
+            }
+        }
+
+        // 지역 고르기가 끝났을 때 불리는 메서드(그 위 층의 콜백)에 건다 — 불리는 순간 결과를 적는다. 기록에서만, 같은 메서드는 한 번만.
+        private static void PatchRegionCallback(MethodInfo callback)
+        {
+            if (_realtime == null || callback == null) return;
+            try
+            {
+                if (callback.IsAbstract || callback.ContainsGenericParameters || callback is System.Reflection.Emit.DynamicMethod)
+                    throw new NotSupportedException("걸 수 없는 메서드(" + callback.Name + ")");
+                lock (_realtimePatched)
+                {
+                    if (!_realtimePatched.Add(callback)) return;
+                    string dmdType = Environment.GetEnvironmentVariable("MONOMOD_DMD_TYPE");
+                    Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", "dynamicmethod");
+                    try
+                    {
+                        _realtime.Patch(callback, prefix: new HarmonyMethod(typeof(CapturePatches).GetMethod(nameof(RealtimeRegionDonePrefix), BindingFlags.Static | BindingFlags.NonPublic)));
+                    }
+                    finally { Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", dmdType); }
+                }
+                PatchedMethods++;
+            }
+            catch (Exception e)
+            {
+                string problem = $"{RealtimePatch} 지역 고르기 결과: {e.GetBaseException().Message} — 결과를 기록하지 못한다(재생에서 지역 선택 뒤의 접속이 이어지지 않는다)";
+                lock (Problems) { Problems.Add(problem); CoreProblems.Add(RealtimePatch + " 지역 고르기 결과"); }
+                Debug.LogWarning("[LocaleCapture] " + problem);
+            }
+        }
+
+        private static void RealtimeRegionDonePrefix(object[] __args)
+        {
+            if (__args != null && __args.Length > 0) RealtimeTape.RegionCompleted(__args[0]);
+        }
+
+        private static void RealtimeListenerPrefix(object __instance, object[] __args, MethodBase __originalMethod) =>
+            RealtimeTape.BeforeCallback(__instance, RealtimeTape.CallbackKind(__originalMethod.Name), __args);
+
+        private static void RealtimeListenerFinalizer() => RealtimeTape.AfterCallback();
 
         // ── 개별 패치 ──────────────────────────────────────────────────────────
 
