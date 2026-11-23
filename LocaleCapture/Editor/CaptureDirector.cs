@@ -45,6 +45,7 @@ namespace CookApps.LocaleCapture.Editor
             public string SavedStartScene;
             public bool RetryingRealtime;   // 지금 패스는 빠르게 뽑은 게 녹화와 달라 실제 속도로 다시 뽑는 중
             public bool RetriedLive;        // 지금 패스는 실제 서버에서 받은 응답이 있어 한 번 더 뽑는 중
+            public bool InPlaceRedone;      // 지금 패스는 프레임을 세운 채 받은 응답을 버리고 예전 방식으로 다시 받는 중
             public int SavedGameViewMaximized = -1;   // 재생 동안 Game 뷰를 최대화(다른 창이 매 프레임 그리지 않게) — 끝나면 되돌린다
             public int SavedEnterPlayMode = -1;       // Enter Play Mode Settings(도메인·씬 리로드 끄기) 원래 값 — 작업 동안 꺼 둔다
             public int SavedEnterPlayModeOptions;
@@ -295,6 +296,7 @@ namespace CookApps.LocaleCapture.Editor
             _state.PassIndex = 0;
             _state.RetryingRealtime = false;
             _state.RetriedLive = false;
+            _state.InPlaceRedone = false;
             _state.Retries = 0;
             _state.LastDivergence = null;
             _state.Stalled = false;
@@ -565,6 +567,19 @@ namespace CookApps.LocaleCapture.Editor
                     // 받은 응답은 언어별 테이프에 남으므로 다시 뽑을 땐 기다림 없이 녹화 프레임에 그대로 넘긴다.
                     // 다만 받은 응답이 녹화 프레임 전에 도착해 기다린 프레임이 없고 검사도 통과했으면, 그 패스는 받아 둔 응답으로 뽑은 것과
                     // 같다(같은 응답이 같은 프레임에 같은 길로 넘어갔다) — 다시 뽑지 않는다. 응답은 그대로 언어별 테이프에 남는다.
+                    // 보통은 이쪽이다: 재생은 그런 요청을 프레임을 세운 채 받는다(NetworkTape 의 "프레임을 세운 채 받기").
+                    // 프레임을 세운 채 받은 응답이 있는 패스가 녹화와 달라졌으면 받는 방식 탓일 수 있다 — 그렇게 받은 응답을 버리고,
+                    // 그 방식을 끈 채 이 패스를 처음부터 다시 뽑는다(예전처럼 프레임을 돌리며 받고, 기다렸으면 받아 둔 응답으로 한 번 더).
+                    if (_state.LastCompleted && !_state.RetriedLive && !_state.InPlaceRedone && report != null && report.ServerInPlace > 0 && Divergence(report) != null)
+                    {
+                        int dropped = NetworkTape.DropInPlace(_state.Directory, LocaleOf(pass));
+                        NetworkTape.TurnOffInPlace();
+                        _state.InPlaceRedone = true;
+                        _state.Reports.Add($"다시 — {report.Pass}: 프레임을 세운 채 받은 응답 {report.ServerInPlace}개가 있는 패스가 녹화와 달라졌다({Divergence(report)}) — " +
+                                           $"그 응답 {dropped}개를 버리고 예전 방식으로 다시 뽑았다(에디터를 다시 켤 때까지 예전 방식을 쓴다)");
+                        StartPass();
+                        break;
+                    }
                     if (_state.LastCompleted && !_state.RetriedLive && report != null && report.ServerFetched > 0)
                     {
                         if (report.ServerHeldFrames > 0 || Divergence(report) != null)
@@ -575,7 +590,9 @@ namespace CookApps.LocaleCapture.Editor
                             StartPass();
                             break;
                         }
-                        _state.Reports.Add($"참고 — {report.Pass}: 실제 서버에서 받은 응답 {report.ServerFetched}개(이 언어로 처음)가 녹화 프레임 전에 도착해 기다림 없이 그대로 썼다");
+                        _state.Reports.Add(report.ServerInPlace >= report.ServerFetched
+                            ? $"참고 — {report.Pass}: 실제 서버에서 받은 응답 {report.ServerFetched}개(이 언어로 처음)를 프레임을 세운 채 받아 다시 뽑지 않았다"
+                            : $"참고 — {report.Pass}: 실제 서버에서 받은 응답 {report.ServerFetched}개(이 언어로 처음)가 녹화 프레임 전에 도착해 기다림 없이 그대로 썼다");
                     }
                     _state.RetriedLive = false;
                     // 재생이 녹화와 달라졌으면 그 패스만 실제 속도로 다시 뽑는다(파일은 덮어쓴다). 간헐적인 어긋남은 다시 뽑으면 대개 맞는다 —
@@ -623,6 +640,7 @@ namespace CookApps.LocaleCapture.Editor
                         break;
                     }
                     // 여기부터는 이 패스의 마지막 결과다.
+                    _state.InPlaceRedone = false;
                     _state.RetryingRealtime = false;
                     _state.Retries = 0;
                     _state.LastDivergence = null;

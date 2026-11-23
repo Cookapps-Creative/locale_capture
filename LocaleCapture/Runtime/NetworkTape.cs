@@ -50,6 +50,8 @@ namespace CookApps.LocaleCapture
             // HttpClient 요청: 통신 코드의 맨 아래(전송 단계)가 서버에서 받은 원본 응답, 보낸 순서대로(재시도하면 여러 개).
             // 위의 Status·Body 는 통신 코드가 다 처리하고 게임에 넘긴 결과다. 이전 기록에는 없다.
             public List<Raw> Raws = new List<Raw>();
+            // 언어별 테이프: 재생이 프레임을 세운 채 받은 응답이다("프레임을 세운 채 받기" 절). 그 패스가 어긋나면 이 응답은 버린다(DropInPlace).
+            public bool InPlace;
 
             // 재생에서만: 녹화에 언어 표기만 다른 같은 요청이 있어 타이밍은 그쪽을 따르고, 내용은 실제 서버에서 받는다.
             [NonSerialized] public bool Fetch;
@@ -96,6 +98,7 @@ namespace CookApps.LocaleCapture
         public static int Live { get; private set; }
         public static int Fetched { get; private set; }   // 재생: 실제 서버에서 받아 온 응답 수(언어 요청·기록에 없던 요청) — 받는 동안 게임 시간을 멈추고 기다렸다
         public static int Piped => _piped;                // 재생: 그중 전송 단계의 원본 응답으로 통신 코드를 돌려 답한 수
+        public static int WaitedInPlace => _waitedInPlace;   // 재생: 실제 서버에서 받은 것 중 프레임을 세운 채 받은 수("프레임을 세운 채 받기" 절)
 
         private static string _directory, _locale;
         private static int _fps = 30;
@@ -168,6 +171,8 @@ namespace CookApps.LocaleCapture
             _recordedLiveQueues.Clear();
             _recordedForms = Array.Empty<string>();
             _lastByKey.Clear();
+            _waitedInPlace = 0;
+            _sentInTransport = null;
             lock (_gate) { _waiting.Clear(); _unfinished.Clear(); }
             lock (_pending) _pending.Clear();
             _tapedDue.Clear();
@@ -359,7 +364,8 @@ namespace CookApps.LocaleCapture
                         if (save && requested < _frame - 1) CaptureVerify.ServerDiffered(requested, unused);
                         else CaptureVerify.Add(requested, "서버", unused);
                     }
-                    Debug.Log($"[LocaleCapture] 서버 응답 재생 {Replayed}개(통신 코드를 거쳐 답한 것 {Piped}개), 실서버 {Live}개, 테이프에 없음 {Missed}개");
+                    Debug.Log($"[LocaleCapture] 서버 응답 재생 {Replayed}개(통신 코드를 거쳐 답한 것 {Piped}개), 실서버 {Live}개, 테이프에 없음 {Missed}개" +
+                              (Fetched > 0 ? $", 실제 서버에서 받은 {Fetched}개 중 프레임을 세운 채 받은 것 {WaitedInPlace}개" : ""));
                 }
             }
             catch (Exception e) { Debug.LogWarning("[LocaleCapture] 테이프 저장 실패: " + e.Message); }
@@ -397,6 +403,35 @@ namespace CookApps.LocaleCapture
             var file = File.Exists(path) ? JsonUtility.FromJson<TapeFile>(File.ReadAllText(path)) : new TapeFile();
             file.Entries.AddRange(entries);
             File.WriteAllText(path, JsonUtility.ToJson(file));
+        }
+
+        // 언어별 테이프에서 "프레임을 세운 채 받은" 응답을 지운다. 지운 수.
+        // 그렇게 받은 패스가 녹화와 달라졌을 때 쓴다 — 받는 방식 탓일 수 있으니 그 응답으로 다시 뽑지 않고, 예전 방식으로 새로 받게 한다.
+        public static int DropInPlace(string directory, string locale)
+        {
+            try
+            {
+                string path = Path.Combine(directory, LiveFileName(locale));
+                if (!File.Exists(path)) return 0;
+                TapeFile file = JsonUtility.FromJson<TapeFile>(File.ReadAllText(path));
+                int dropped = file.Entries.RemoveAll(e => e.InPlace);
+                if (dropped == 0) return 0;
+                if (file.Entries.Count == 0) File.Delete(path);
+                else File.WriteAllText(path, JsonUtility.ToJson(file));
+                return dropped;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[LocaleCapture] 언어별 테이프를 고치지 못했다: " + e.Message);
+                return 0;
+            }
+        }
+
+        // 에디터를 다시 켤 때까지 "프레임을 세운 채 받기" 를 쓰지 않는다.
+        public static void TurnOffInPlace()
+        {
+            _inPlaceOff = _inPlaceOffLoaded = true;
+            try { RememberedInPlaceOff(true, true); } catch { /* 적지 못하면 이 도메인에서만 */ }
         }
 
         // ── 공통 ───────────────────────────────────────────────────────────────
@@ -558,6 +593,7 @@ namespace CookApps.LocaleCapture
             public int Depth;
             public Entry Entry;       // 이 요청을 기록 중인 항목(없으면 null)
             public Entry Timing;      // 재생: 실제 서버로 보냈고, 이 녹화 요청의 프레임에 맞춰 넘긴다
+            public bool InPlace;      // 재생: 그 응답을 프레임을 세운 채 받았다(전송 단계가 요청 호출 안에서 끝났다)
             public bool MainThread;   // 메인 스레드에서 보낸 요청인가
             public string Flight;     // 실제 서버로 보내는 동안의 _inFlight 키
             // 아래는 전송 단계("전송 단계" 절)에서 쓴다
@@ -646,6 +682,7 @@ namespace CookApps.LocaleCapture
                 else if (call.Timing != null)
                 {
                     call.Entry = NewEntry(request.Method.Method, url, true);
+                    call.Entry.InPlace = call.InPlace;   // 전송 단계는 이 호출 안에서 이미 돌았다
                     ShareRaws(call);
                     task = RecordAsync(call.Entry, original);
                 }
@@ -663,7 +700,14 @@ namespace CookApps.LocaleCapture
             }
             if (call.Tape != null) return outermost ? DeliverPiped(call, task) : task;
             if (!outermost || call.Entry == null) return task;
-            if (call.Timing != null) return call.MainThread ? DeliverAt(task, call.Timing) : task;
+            if (call.Timing != null)
+            {
+                if (!call.MainThread) return task;
+                // 프레임을 세운 채 받은 응답: 받아 적는 일(본문을 버퍼에 담기)이 스레드 풀로 넘어갔으면 그것도 여기서 마저 기다린다 —
+                // 이 프레임 끝에 아직이면 세션이 게임 시간을 멈추고, 그러면 이 패스를 다시 뽑게 된다.
+                if (call.InPlace && CaptureClock.OnMainThread) WaitBriefly(task);
+                return DeliverAt(task, call.Timing);
+            }
             // 다른 스레드에서 보낸 요청은 그대로 둔다 — 그 스레드가 응답을 막고 기다리면 메인 스레드 Update 를 못 기다린다.
             return Current == Mode.Record && call.MainThread ? DeliverRecorded(call.Entry, task) : task;
         }
@@ -909,7 +953,14 @@ namespace CookApps.LocaleCapture
             bool extra = false;
             lock (call)
             {
-                if (call.TransportDepth++ > 0 || call.Tape == null) return false;   // 겹친 안쪽 호출이거나, 실제 서버로 보내는 요청(postfix 가 받아 적는다)
+                if (call.TransportDepth++ > 0) return false;   // 겹친 안쪽 호출
+                _sentInTransport = null;                        // 앞 호출이 예외로 끝나 남은 것이 있으면 버린다
+                if (call.Tape == null)
+                {
+                    // 실제 서버로 보내는 요청(postfix 가 받아 적는다). 프레임을 세운 채 받을 요청이면 이 호출 안에서 나가는 엔진 요청을 모은다.
+                    if (CanWaitInPlace(call)) _sentInTransport = new List<UnityWebRequestAsyncOperation>();
+                    return false;
+                }
                 List<Raw> raws = call.Tape.Raws;
                 int index = call.NextRaw++;
                 // 기록보다 여러 번 보내면(재시도 횟수가 다르면) 마지막 응답을 다시 준다 — 재생 중에 실제 서버로는 보내지 않는다.
@@ -948,10 +999,13 @@ namespace CookApps.LocaleCapture
             Call call = CallFor(request);
             if (call == null) return original;
             var raw = new Raw { Outcome = Entry.Unfinished };
+            List<UnityWebRequestAsyncOperation> sent;
             lock (call)
             {
                 if (--call.TransportDepth > 0 || call.Tape != null) return original;
                 (call.Raws ??= new List<Raw>()).Add(raw);   // 보낸 순서대로
+                sent = _sentInTransport;                    // 가장 바깥 호출에서만 꺼낸다(TryTransport 가 거기서 만들었다)
+                _sentInTransport = null;
             }
             var tcs = new TaskCompletionSource<HttpResponseMessage>();
             original.ContinueWith(t =>
@@ -981,7 +1035,89 @@ namespace CookApps.LocaleCapture
                     Forward(t, tcs);
                 }
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            if (sent != null && CanWaitInPlace(call) && FinishInPlace(request, tcs.Task, sent)) call.InPlace = true;
             return tcs.Task;
+        }
+
+        // ── 프레임을 세운 채 받기 ──────────────────────────────────────────────
+        // 재생 중 실제 서버로 가는 요청(주소의 언어 표기만 다른 요청, 녹화 땐 캐시를 써서 안 나갔던 요청)은 응답이 녹화 프레임까지 안 오면
+        // 세션이 게임 시간을 멈추고 기다린다. 그 사이에도 프레임 단위 로직은 돌아 흐름이 녹화보다 앞설 수 있어서, 그 패스는 받아 둔 응답으로
+        // 한 번 더 뽑아야 했다(언어마다 패스가 두 번).
+        // 그래서 요청이 나간 그 자리에서 메인 스레드를 세우고 통신이 끝나기를 기다린다 — 프레임이 하나도 돌지 않으므로 응답은 요청 호출 안에서
+        // 온 것이 되고, 받아 둔 응답으로 다시 뽑을 때와 같은 흐름이라 그 패스를 그대로 쓴다.
+        //  · UnityWebRequest 로 바로 보내는 요청(BeforeWebRequest): 도구가 실제 서버에서 받아 오는 것(TapeServer.Fetch)을 기다린다.
+        //  · HttpClient 요청(RecordTransport): 게임의 전송 단계가 보낸 것을 기다린다. 보내는 것은 여전히 게임의 통신 코드라 헤더·서명·응답
+        //    모양이 그대로이고, 통신 코드는 요청 호출 안에서 끝까지 돈다.
+        //      – 전송이 스레드 풀에서 끝나는 것(소켓 등)일 때만이다. 전송이 엔진 요청(UnityWebRequest)으로 보내면 기다리지 않는다 —
+        //        통신은 엔진의 작업 스레드에서 끝나도 "끝났다" 는 알림은 프레임이 돌아야 온다. 그 알림을 여기서 대신 부르는 방법은
+        //        에디터에서 확인하지 못해 넣지 않았다. 그런 요청은 예전처럼 프레임을 돌리며 기다리고, 늦으면 그 패스를 한 번 더 뽑는다.
+        //      – 한도 안에 안 끝나면(메인 스레드가 돌아야 끝나는 전송) 그만두고 예전 방식으로 돌아간다. 한 번 그러면 에디터를 켜 둔 동안은
+        //        다시 시도하지 않는다(매번 한도만큼 멈추지 않게).
+        //  · 메인 스레드에서 보낸 요청만. 다른 스레드의 요청은 그 스레드에서 끝나므로 세울 것이 없다.
+
+        // 끄면 예전처럼 프레임이 도는 채로 기다린다.
+        public static bool WaitInPlace = true;
+        private const int InPlaceLimitMs = 5000;   // 이만큼 기다려도 안 끝나면 그만둔다(서버가 느린 것일 수도 있다 — 그러면 예전 방식이 이어받는다)
+        private const int InPlaceGraceMs = 150;    // 응답을 받은 뒤 받아 적는 일(스레드 풀)이 끝날 때까지
+        private const string InPlaceOffKey = "CookApps.LocaleCapture.WaitInPlaceOff";
+        private static int _waitedInPlace;
+        [ThreadStatic] private static List<UnityWebRequestAsyncOperation> _sentInTransport;   // 지금 도는 전송 단계 호출 안에서 나간 엔진 요청
+        private static bool _inPlaceOffLoaded, _inPlaceOff;
+
+        private static bool InPlaceOff
+        {
+            get
+            {
+                if (_inPlaceOffLoaded) return _inPlaceOff;
+                _inPlaceOffLoaded = true;
+                try { _inPlaceOff = RememberedInPlaceOff(false, false); } catch { _inPlaceOff = false; }
+                return _inPlaceOff;
+            }
+        }
+
+        // 에디터를 켜 둔 동안 남는 표시(도메인이 다시 올라와도 남는다). write 면 value 를 적는다.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static bool RememberedInPlaceOff(bool write, bool value)
+        {
+#if UNITY_EDITOR
+            if (write) UnityEditor.SessionState.SetBool(InPlaceOffKey, value);
+            else value = UnityEditor.SessionState.GetBool(InPlaceOffKey, false);
+#endif
+            return value;
+        }
+
+        private static bool CanWaitInPlace(Call call) =>
+            WaitInPlace && Current == Mode.Replay && call.Timing != null && call.MainThread && CaptureClock.OnMainThread && !InPlaceOff;
+
+        // 메인 스레드를 세운 채 이 전송이 끝나기를 기다린다. 끝났으면 true.
+        private static bool FinishInPlace(HttpRequestMessage request, Task transport, List<UnityWebRequestAsyncOperation> sent)
+        {
+            if (!transport.IsCompleted)
+            {
+                if (sent.Count > 0) return false;   // 엔진 요청으로 보내는 전송 — 프레임이 돌아야 끝난다(위 설명). 예전 방식 그대로 둔다
+                var watch = System.Diagnostics.Stopwatch.StartNew();
+                while (!transport.IsCompleted && watch.ElapsedMilliseconds <= InPlaceLimitMs) Thread.Sleep(1);
+                if (!transport.IsCompleted)
+                {
+                    GiveUpInPlace(Short(Key(request.Method.Method, request.RequestUri?.ToString())), $"{InPlaceLimitMs / 1000}초 안에 끝나지 않았다");
+                    return false;
+                }
+            }
+            Interlocked.Increment(ref _waitedInPlace);
+            return true;
+        }
+
+        private static void GiveUpInPlace(string name, string why)
+        {
+            TurnOffInPlace();
+            Debug.LogWarning($"[LocaleCapture] 실제 서버 응답을 프레임을 세운 채 받지 못했다({why}): {name} — 예전처럼 프레임을 돌리며 기다리고, 에디터를 다시 켤 때까지 이 방식은 쓰지 않는다");
+        }
+
+        // 스레드 풀에서 곧 끝날 일을 잠깐 기다린다(실패·취소로 끝나도 끝난 것이다).
+        private static void WaitBriefly(Task task)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            while (!task.IsCompleted && watch.ElapsedMilliseconds < InPlaceGraceMs) Thread.Sleep(1);
         }
 
         // load: 본문을 버퍼에 담은 작업(본문이 없으면 null). 실패하면 이 응답은 미완료로 남아, 그 요청은 바깥에서 저장한 응답으로 재생한다.
@@ -1039,6 +1175,13 @@ namespace CookApps.LocaleCapture
                 // 테이프 서버가 실제 서버에서 받아 와 녹화 프레임에 내준다. 그때까지 못 받으면 세션이 기다린다.
                 TapeServer.Slot slot = TapeServer.Fetch(e, RequestHeaders(request), request.uploadHandler?.data, due - 2);
                 request.url = slot.Url;
+                // 받는 동안 프레임을 세운다("프레임을 세운 채 받기" 절). 여기는 도구가 직접 받으므로 기다리기만 하면 된다 — 한도를 넘기면 예전처럼 세션이 기다린다.
+                if (WaitInPlace && CaptureClock.OnMainThread && !InPlaceOff)
+                {
+                    var watch = System.Diagnostics.Stopwatch.StartNew();
+                    while (!slot.Fetched && watch.ElapsedMilliseconds < InPlaceLimitMs) Thread.Sleep(1);
+                    if (slot.Fetched) Interlocked.Increment(ref _waitedInPlace);
+                }
                 AddPending(new Pending { Due = due - 2, Name = Short(Key(e.Method, e.Url)), Ready = () => slot.Fetched });
             }
             // 보내고 완료 이벤트까지 두 프레임쯤 걸린다. 기록 때 응답 없이 끝난 요청(연결 실패·중단)은 응답 없이 연결을 끊는 쪽으로 보낸다.
@@ -1068,6 +1211,7 @@ namespace CookApps.LocaleCapture
         public static void AfterWebRequest(UnityWebRequest request, UnityWebRequestAsyncOperation operation)
         {
             if (Current == Mode.Off || request == null || operation == null) return;
+            _sentInTransport?.Add(operation);   // 프레임을 세운 채 받을 전송 단계 호출 안에서 나간 요청
             // 테이프로 답하는 요청: 녹화 때 끝난 프레임이 지나도 안 끝났으면(재생이 빨라 로컬 왕복이 여러 프레임에 걸치면) 세션이 기다린다.
             if (_tapedDue.TryGetValue(request, out int tapedDue))
             {

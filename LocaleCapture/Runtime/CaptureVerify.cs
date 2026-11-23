@@ -55,7 +55,8 @@ namespace CookApps.LocaleCapture
             public int DifferenceCount;              // 달라진 곳 수(로딩 시점 차이 제외)
             public List<string> Differences = new List<string>();   // 프레임 순으로 처음 몇 건 "프레임 [분류] 내용"
             public int ServerReplayed, ServerLive, ServerMissed;
-            public int ServerFetched;                // 실제 서버에서 받아 온 응답 수 — 있으면 그 패스를 받아 둔 응답으로 다시 뽑는다
+            public int ServerFetched;                // 실제 서버에서 받아 온 응답 수 — 기다린 프레임이 있으면 그 패스를 받아 둔 응답으로 다시 뽑는다
+            public int ServerInPlace;                // 그중 프레임을 세운 채 받은 수(기다린 프레임이 없다)
             public int ServerPiped;                  // 재생한 응답 중 통신 코드를 그대로 돌려 답한 수(전송 단계의 원본 응답으로). 0 이면 통신 코드가 건너뛰어졌다
             // 실시간 통신(RealtimeTape): 기록한 항목 수 / 재생에서 넘긴 콜백 수 / 기록과 맞춘 호출 수.
             public int RealtimeRecorded, RealtimeDelivered, RealtimeCalls;
@@ -396,6 +397,7 @@ namespace CookApps.LocaleCapture
             report.ServerLive = NetworkTape.Live;
             report.ServerMissed = NetworkTape.Missed;
             report.ServerFetched = NetworkTape.Fetched;
+            report.ServerInPlace = NetworkTape.WaitedInPlace;
             report.ServerPiped = NetworkTape.Piped;
             report.LayoutTraced = LayoutTrace.Active;
             report.Layouts = LayoutTrace.End();
