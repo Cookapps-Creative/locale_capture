@@ -474,8 +474,8 @@ namespace CookApps.LocaleCapture.Editor
             catch { return null; }
         }
 
-        // 설치 폴더의 파일 이름·크기·고친 시각을 묶은 값(내용은 읽지 않는다).
-        private static string Fingerprint(string install)
+        // 설치 폴더의 파일 이름·크기·고친 시각을 묶은 값(내용은 읽지 않는다). 도구가 가진 종류의 파일만 본다.
+        public static string Fingerprint(string install)
         {
             string root = Path.GetFullPath(install).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
             var text = new StringBuilder();

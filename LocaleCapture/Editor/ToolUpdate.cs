@@ -22,6 +22,7 @@ namespace CookApps.LocaleCapture.Editor
             public string Current = "", Latest = "", Problem = "", Detail = "";
             public int Files;
             public long CheckedAt;
+            public string Install = "";   // 확인했을 때의 설치 폴더 지문 — 그 뒤 설치본이 바뀌면 이 결과는 버린다(DropIfInstallChanged)
         }
 
         private sealed class Result
@@ -30,6 +31,7 @@ namespace CookApps.LocaleCapture.Editor
             public UpdateCore.Release Release, Installed;
             public List<UpdateCore.Change> Changes;
             public List<string> Log = new List<string>();
+            public string Fingerprint = "";   // 비교한 설치 폴더의 지문
         }
 
         private const string Key = "LocaleCapture.Update", Title = "Locale Capture 업데이트";
@@ -132,10 +134,35 @@ namespace CookApps.LocaleCapture.Editor
         // 창을 열 때: 아직 안 봤거나 본 지 오래됐으면 조용히 확인한다.
         public static void AutoCheck()
         {
-            if (Working || !CanRun) return;
+            if (Working) return;
+            DropIfInstallChanged();
+            if (!CanRun) return;
             long at = Now.CheckedAt;
             if (at > 0 && (DateTime.UtcNow - new DateTime(at, DateTimeKind.Utc)).TotalHours < AutoHours) return;
             Check(false);
+        }
+
+        // 기억해 둔 확인 결과("최신"·"새 버전 있음")는 그때의 설치본을 본 것이다. 그 뒤 설치 폴더가 바뀌었으면(패키지를 다시 가져옴,
+        // 파일을 직접 고침) 버려서 곧바로 다시 확인하게 한다 — 안 그러면 최신 패키지를 가져온 직후에도 예전의 "새 버전이 있다" 가
+        // 다음 자동 확인(6시간 뒤)까지 그대로 보인다. 지문은 파일 이름·크기·고친 시각만 보므로 창을 열 때마다 해도 가볍다.
+        private static void DropIfInstallChanged()
+        {
+            try
+            {
+                Saved saved = Now;
+                if (saved.State != State.Available && saved.State != State.Latest) return;
+                if (!Locate(out string install, out _)) return;
+                if (UpdateCore.Fingerprint(install) == saved.Install) return;
+                _found = null;
+                Set(State.Unknown, s => { s.Current = ""; s.Latest = ""; s.Files = 0; s.Problem = ""; s.Detail = ""; s.CheckedAt = 0; s.Install = ""; });
+            }
+            catch { /* 지문을 못 읽으면 기억한 결과를 그대로 둔다 — 다음 확인이 바로잡는다 */ }
+        }
+
+        private static string FingerprintOf(string install)
+        {
+            try { return UpdateCore.Fingerprint(install); }
+            catch { return ""; }
         }
 
         // 창의 버튼: 새로 받아 비교하고, 다르면 바로 물어본다(전에 찾아 둔 결과는 쓰지 않는다 — 배포본도 설치본도 그새 바뀌었을 수 있다).
@@ -160,7 +187,8 @@ namespace CookApps.LocaleCapture.Editor
         // 백그라운드: Unity 를 부르지 않는다.
         private static Result Compare(string cache, string install, string stamp, bool interactive)
         {
-            var result = new Result { Installed = UpdateCore.ReadStamp(stamp, install) };
+            // 지문은 비교하기 전에 뜬다 — 비교하는 사이 파일이 바뀌면 다음에 창을 열 때 다시 확인하게 된다(안전한 쪽).
+            var result = new Result { Installed = UpdateCore.ReadStamp(stamp, install), Fingerprint = FingerprintOf(install) };
             result.Outcome = UpdateCore.Fetch(cache, UpdateCore.Branch, interactive, out result.Release);
             if (!result.Outcome.Ok) return result;
             result.Changes = UpdateCore.Diff(cache, install, out string error);
@@ -204,11 +232,15 @@ namespace CookApps.LocaleCapture.Editor
             string current = result.Installed?.Label ?? "";
             if (result.Changes.Count == 0)
             {
-                Set(State.Latest, s => { s.Current = current; s.Latest = current; s.Files = 0; s.Problem = ""; s.Detail = result.Release.Subject; });
+                Set(State.Latest, s => { s.Current = current; s.Latest = current; s.Files = 0; s.Problem = ""; s.Detail = result.Release.Subject; s.Install = result.Fingerprint; });
                 return;
             }
             _found = result;
-            Set(State.Available, s => { s.Current = current; s.Latest = result.Release.Label; s.Files = result.Changes.Count; s.Problem = ""; s.Detail = string.Join("\n", Lines(result)); });
+            Set(State.Available, s =>
+            {
+                s.Current = current; s.Latest = result.Release.Label; s.Files = result.Changes.Count; s.Problem = ""; s.Detail = string.Join("\n", Lines(result));
+                s.Install = result.Fingerprint;
+            });
             if (_manual) Confirm();
         }
 
@@ -296,8 +328,8 @@ namespace CookApps.LocaleCapture.Editor
                 if (left.Count > 0) throw new IOException($"바뀌지 않은 파일이 {left.Count}개 남았다: {string.Join(", ", left.Take(5).Select(c => c.Path))}");
                 UpdateCore.WriteStamp(StampFile, found.Release, install);
                 UpdateCore.Trim(cache);
-                string label = found.Release.Label;
-                Set(State.Latest, s => { s.Current = label; s.Latest = label; s.Files = 0; s.Problem = ""; s.Detail = found.Release.Subject; });
+                string label = found.Release.Label, print = FingerprintOf(install);   // 바꾼 뒤의 설치본
+                Set(State.Latest, s => { s.Current = label; s.Latest = label; s.Files = 0; s.Problem = ""; s.Detail = found.Release.Subject; s.Install = print; });
                 Debug.Log($"[LocaleCapture] 업데이트 완료 — {label}, 파일 {found.Changes.Count}개\n- " + string.Join("\n- ", found.Changes.Select(c => (c.Delete ? "삭제 " : "") + c.Path)));
                 _found = null;
             }
