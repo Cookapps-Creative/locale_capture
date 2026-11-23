@@ -34,6 +34,8 @@ namespace CookApps.LocaleCapture.Editor
 
         public static bool Installed => _harmony != null;
         public static int PatchedMethods { get; private set; }
+        // 그중 Harmony 로는 못 바꿔 메서드를 복사해서 바꾼 곳(예외 필터가 든 메서드 — CopyPatch)
+        public static int CopiedMethods { get; private set; }
         public static readonly List<string> Problems = new List<string>();
         // 그중 핵심 패치(시계·난수 생성자·통신·로딩 등) 실패. 개별 메서드(제네릭·예외 블록 등 못 바꾸는 곳)는 Problems 에만 남는다.
         public static readonly List<string> CoreProblems = new List<string>();
@@ -50,6 +52,8 @@ namespace CookApps.LocaleCapture.Editor
             CoreProblems.Clear();
             RiskyProblems.Clear();
             PatchedMethods = 0;
+            CopiedMethods = 0;
+            CopyPatch.GuardDir = System.IO.Path.GetFullPath("Library/LocaleCapture");
             _focusBlocked = 0;
             lock (_transports) _transports.Clear();
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -63,6 +67,7 @@ namespace CookApps.LocaleCapture.Editor
             finally { Environment.SetEnvironmentVariable("MONOMOD_DMD_TYPE", dmdType); }
             InstallMs = watch.Elapsed.TotalMilliseconds;
             Debug.Log($"[LocaleCapture] 런타임 패치 {PatchedMethods}곳 ({InstallMs:F0}ms), 앱 포커스 알림 막음 {_focusBlocked}곳" +
+                      (CopiedMethods > 0 ? $", 예외 필터가 든 메서드 {CopiedMethods}곳은 복사해서 바꿈" : "") +
                       (RealtimeTape.Bound ? ", 실시간 통신(Photon) 연결" : "") +
                       (Problems.Count > 0
                           ? $", 못 바꾼 곳 {Problems.Count}건(재현에 영향 줄 수 있는 것 {RiskyProblems.Count + CoreProblems.Count}건): {string.Join(" / ", CoreProblems.Concat(RiskyProblems).Concat(Problems).Take(5))}"
@@ -389,10 +394,23 @@ namespace CookApps.LocaleCapture.Editor
                 try { _harmony.Patch(method, transpiler: transpiler); PatchedMethods++; }
                 catch (Exception e)
                 {
-                    // 못 바꾼 메서드(제네릭 타입의 메서드, catch-when 이 든 메서드 등): 그 안에 남은 호출이 무엇인지까지 남긴다.
+                    string failure = e.GetBaseException().Message;
+                    // 예외 필터(catch … when)가 든 메서드는 Harmony 가 다시 만들지 못한다 — 메서드를 복사해 호출만 바꿔 끼운다(CopyPatch).
+                    if (CopyPatch.Handles(e))
+                    {
+                        try
+                        {
+                            CopyPatch.Apply(method, map);
+                            PatchedMethods++;
+                            CopiedMethods++;
+                            continue;
+                        }
+                        catch (Exception copyFailure) { failure += " / 복사해서 바꾸지도 못했다: " + copyFailure.GetBaseException().Message; }
+                    }
+                    // 못 바꾼 메서드(제네릭 타입의 메서드 등): 그 안에 남은 호출이 무엇인지까지 남긴다.
                     string calls = LeftCalls(method, map, out bool onlyGameRandom);
                     string owner = method.DeclaringType?.FullName ?? "?";
-                    Problems.Add($"{owner}.{method.Name}: {e.GetBaseException().Message} — 그대로 남은 호출: {calls}");
+                    Problems.Add($"{owner}.{method.Name}: {failure} — 그대로 남은 호출: {calls}");
                     bool sound = owner.IndexOf("Audio", StringComparison.OrdinalIgnoreCase) >= 0 || owner.IndexOf("Sound", StringComparison.OrdinalIgnoreCase) >= 0;
                     if ((ownCode && !onlyGameRandom) || (sound && calls.Contains("Random.")))
                         RiskyProblems.Add($"{owner}.{method.Name} ({calls})");
